@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waifuboard"
+dynamic = ["version"]
+description = "Asynchronous API for downloading images, tags, and metadata from image board sites (e.g., Danbooru, Safebooru, Yandere). Ignore the downloaded files."
+readme = { file = "README.md", content-type = "text/markdown" }
+authors = [{ name = "ChijiangZhai", email = "chijiangzhai@gmail.com" }]
+maintainers = [{ name = "ChijiangZhai", email = "chijiangzhai@gmail.com" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Internet",
+]
+license = { file = "LICENSE" }
+keywords = [
+    "python",
+    "acg",
+    "crawler",
+    "spider",
+    "ai",
+    "imageboard",
+    "images",
+    "tags",
+    "metadata",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "aiofiles>=24.1.0",
+    "fake_useragent>=1.2.1",
+    "httpx>=0.28.1",
+    "lxml>=5.3.2",
+    "pandas>=2.3.1",
+    "rich>=14.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/2513502304/WaifuBoard"
+# Documentation = "https://waifuboard.readthedocs.io/"
+Repository = "https://github.com/2513502304/WaifuBoard.git"
+Issues = "https://github.com/2513502304/WaifuBoard/issues"
+
+[tool.setuptools]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["waifuboard*"]
+exclude = ["tests*", "examples*", "scripts*", "downloads*"]
