@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waifuboard"
-dynamic = ["version"]
+version = "0.1.0"
 description = "Asynchronous API for downloading images, tags, and metadata from image board sites (e.g., Danbooru, Safebooru, Yandere). Ignore the downloaded files."
 readme = { file = "README.md", content-type = "text/markdown" }
 authors = [{ name = "ChijiangZhai", email = "chijiangzhai@gmail.com" }]
