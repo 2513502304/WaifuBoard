@@ -1,6 +1,6 @@
 # ***WaifuBoard***
 
-[English README] (./README.md) | [简体中文 README](./README.zh-CN.md) | [繁體中文 README](./README.zh-TW.md) | [日本語 README](./README.ja-JP.md) | [한국어 README](./README.ko-KR.md)
+[English README] (https://github.com/2513502304/WaifuBoard/blob/main/README.md) | [简体中文 README](https://github.com/2513502304/WaifuBoard/blob/main/README.zh-CN.md) | [繁體中文 README](https://github.com/2513502304/WaifuBoard/blob/main/README.zh-TW.md) | [日本語 README](https://github.com/2513502304/WaifuBoard/blob/main/README.ja-JP.md) | [한국어 README](https://github.com/2513502304/WaifuBoard/blob/main/README.ko-KR.md)
 
 用于从图像板站点（例如 Danbooru、Safebooru、Yandere）异步下载图像、标签和元数据的 API。忽略已下载的文件。
 
