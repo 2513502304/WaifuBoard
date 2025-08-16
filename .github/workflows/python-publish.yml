@@ -10,14 +10,14 @@ on:
   release:
     types: [published]
   workflow_dispatch: {}
-  
+
 permissions:
   contents: read
 
 jobs:
   release-build:
     name: deploy to staging
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
 
   pypi-publish:
     name: publish release to pypi
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     needs:
       - release-build
     permissions:
