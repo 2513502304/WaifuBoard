@@ -15,9 +15,29 @@ permissions:
   contents: read
 
 jobs:
-  release-build:
-    name: deploy to staging
+  # https://stackoverflow.com/questions/72788012/how-to-delete-the-deployment-history-of-a-repository-in-github/74771542#74771542
+  cleanup-deployment:
+    name: Delete all of deployment history of a repository in GitHub
     runs-on: ubuntu-latest
+    permissions:
+      # IMPORTANT: this permission is mandatory for delete deployments
+      deployments: write
+
+    steps:
+      # https://github.com/marketplace/actions/delete-deployment-environment
+      - name: Delete all of deployment history of a repository in GitHub
+        uses: strumwolf/delete-deployment-environment@v3.0.0
+        with:
+          token: ${{ github.token }}
+          environment: pypi
+          onlyRemoveDeployments: true
+        continue-on-error: true # Ignore errors if environment does not exist, e.g. first deployment
+
+  release-build:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    needs:
+      - cleanup-deployment
 
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +59,7 @@ jobs:
           path: dist/
 
   pypi-publish:
-    name: publish release to pypi
+    name: Publish release to pypi
     runs-on: ubuntu-latest
     needs:
       - release-build

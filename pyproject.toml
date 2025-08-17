@@ -52,6 +52,7 @@ Homepage = "https://github.com/2513502304/WaifuBoard"
 # Documentation = "https://waifuboard.readthedocs.io/"
 Repository = "https://github.com/2513502304/WaifuBoard.git"
 Issues = "https://github.com/2513502304/WaifuBoard/issues"
+# Changelog = "https://github.com/2513502304/WaifuBoard/blob/master/CHANGELOG.md"
 
 [tool.setuptools]
 
