@@ -32,7 +32,10 @@ class Booru():
     Base Booru Image Board API
     """
 
-    def __init__(self):
+    def __init__(self, *, directory: str = './downloads'):
+        # 当前客户端平台的存储文件根目录
+        self.directory = directory
+
         self.headers = {
             'User-Agent': UserAgent().random,
         }
@@ -603,7 +606,7 @@ class BooruComponent():
         self.client = client
         # 当前客户端平台标识
         self.platform = self.client.__class__.__name__
-        # 当前调用组件功能标识
+        # 当前调用组件的功能标识
         self.type = self.__class__.__name__
-        # 存储文件根目录
-        self.directory = f'./downloads/{self.platform}/{self.type}'
+        # 当前调用组件的存储文件根目录
+        self.directory = os.path.join(self.client.directory, self.platform, self.type)

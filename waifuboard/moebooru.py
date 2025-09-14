@@ -41,8 +41,8 @@ class Moebooru(Booru):
     Moebooru Image Board API
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
 
 class MoebooruComponent(BooruComponent):
@@ -59,8 +59,8 @@ class YandereClient(Moebooru):
     Yandere API reference document: https://yande.re/help/api
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
         # 设置发送相对 URL 请求时使用的基础 URL
         self.base_url = 'https://yande.re'

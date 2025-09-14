@@ -48,8 +48,8 @@ class Danbooru(Booru):
     Danbooru Image Board API
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
 
 class DanbooruComponent(BooruComponent):
@@ -80,8 +80,8 @@ class DanbooruClient(Danbooru):
         wft? 你把 python-requests/2.32.4 和 python-httpx/0.28.0 这种 UA 都通过了不让我正常的 UA 通过？还有，为什么不禁全呢，换成 python-httpx/0.28.1 版本就又不通过了？
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
         # 设置发送相对 URL 请求时使用的基础 URL
         self.base_url = 'https://danbooru.donmai.us/'

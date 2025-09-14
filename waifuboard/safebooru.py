@@ -35,8 +35,8 @@ class Safebooru(Booru):
     Safebooru Image Board API
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
 
 class SafebooruComponent(BooruComponent):
@@ -53,8 +53,8 @@ class SafebooruClient(Safebooru):
     Safebooru API reference document: https://safebooru.org/index.php?page=help&topic=dapi
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
         # 设置发送相对 URL 请求时使用的基础 URL
         self.base_url = 'https://safebooru.org'
