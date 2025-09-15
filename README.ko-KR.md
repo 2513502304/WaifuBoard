@@ -68,15 +68,16 @@ if __name__ == "__main__":
 **디렉터리 트리**:
 
 ```
-downloads/
+{directory}/
 └─ {Platform}/
 	└─ {Component}/
 		└─ task/
-			├─ ... image files ...
+			├─ images/
+			│  └─ ...
 			├─ tags/
 			│  └─ ...
 			└─ raws/
-			   └─ ...
+				└─ ...
 ```
 
 `task`는 다운로드 작업의 고유 식별자입니다(예: 게시물 ID, 풀 ID).

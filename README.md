@@ -68,11 +68,12 @@ If this project is helpful to you, a small star would be the unwavering motivati
 **Directory tree**:
 
 ```
-downloads/
+{directory}/
 └─ {Platform}/
 	└─ {Component}/
 		└─ task/
-			├─ ... image files ...
+			├─ images/
+			│  └─ ...
 			├─ tags/
 			│  └─ ...
 			└─ raws/

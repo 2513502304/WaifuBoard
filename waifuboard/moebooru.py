@@ -348,10 +348,11 @@ class YanderePosts(MoebooruComponent):
 
         # 下载帖子
         urls = posts['file_url']  # 帖子 URLs
-        posts_directory = os.path.join(self.directory, f'{tags if tags !="" else "all"}')  # 图像文件目录
+        posts_directory = os.path.join(self.directory, f'{tags if tags !="" else "all"}')  # 帖子文件目录
+        images_directory = os.path.join(posts_directory, 'images')  # 图像文件目录
         result: list[tuple[str, str]] = await self.client.concurrent_download_file(
             urls,
-            posts_directory,
+            images_directory,
             concurrency=concurrency,
         )
 
@@ -872,10 +873,11 @@ class YanderePools(MoebooruComponent):
 
             # 下载帖子
             urls = posts['file_url']  # 帖子 URLs
-            posts_directory = os.path.join(self.directory, f'{name}')  # 图像文件目录
+            posts_directory = os.path.join(self.directory, f'{name}')  # 帖子文件目录
+            images_directory = os.path.join(posts_directory, 'images')  # 图像文件目录
             result: list[tuple[str, str]] = await self.client.concurrent_download_file(
                 urls,
-                posts_directory,
+                images_directory,
                 concurrency=concurrency,
             )
 

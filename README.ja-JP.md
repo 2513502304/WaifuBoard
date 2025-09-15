@@ -68,11 +68,12 @@ if __name__ == "__main__":
 **ディレクトリツリー**：
 
 ```
-downloads/
+{directory}/
 └─ {Platform}/
 	└─ {Component}/
 		└─ task/
-			├─ ... image files ...
+			├─ images/
+			│  └─ ...
 			├─ tags/
 			│  └─ ...
 			└─ raws/

@@ -68,15 +68,16 @@ if __name__ == "__main__":
 **目錄樹**：
 
 ```
-downloads/
+{directory}/
 └─ {Platform}/
 	└─ {Component}/
 		└─ task/
-			├─ ... image files ...
+			├─ images/
+			│  └─ ...
 			├─ tags/
 			│  └─ ...
 			└─ raws/
-			   └─ ...
+				└─ ...
 ```
 
 其中 `task` 是下載任務的唯一識別碼（例如：帖文 ID、合集 ID）。
