@@ -42,9 +42,10 @@ dependencies = [
     "aiofiles>=24.1.0",
     "fake-useragent>=1.2.1",
     "httpx>=0.28.1",
-    "lxml>=5.3.2",
     "pandas>=2.3.1",
+    "parsel>=1.10.0",
     "rich>=14.1.0",
+    "tenacity>=9.1.2",
 ]
 
 [project.urls]
@@ -60,6 +61,6 @@ Issues = "https://github.com/2513502304/WaifuBoard/issues"
 version = {attr = "waifuboard.__version__"}
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["waifuboard*"]
 exclude = ["tests*", "examples*", "scripts*", "downloads*"]
