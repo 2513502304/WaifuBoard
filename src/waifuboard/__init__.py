@@ -1,5 +1,6 @@
 """WaifuBoard: Asynchronous API for downloading images, tags, and metadata from image board sites (e.g., Danbooru, Safebooru, Yandere). Ignore the downloaded files."""
 
+from .booru import Booru
 from .danbooru import DanbooruClient
 from .safebooru import SafebooruClient
 from .moebooru import YandereClient
@@ -8,10 +9,11 @@ from .moebooru import YandereClient
 __author__ = "ChijiangZhai"
 __email__ = "chijiangzhai@gmail.com"
 __description__ = """Asynchronous API for downloading images, tags, and metadata from image board sites (e.g., Danbooru, Safebooru, Yandere). Ignore the downloaded files."""
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
-    'DanbooruClient',
-    'SafebooruClient',
-    'YandereClient',
+    "Booru",
+    "DanbooruClient",
+    "SafebooruClient",
+    "YandereClient",
 ]
