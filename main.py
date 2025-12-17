@@ -1,16 +1,27 @@
-from waifuboard import DanbooruClient, SafebooruClient, YandereClient
-from waifuboard.utils import logger
 import asyncio
+import logging
 import time
+
+from waifuboard import Booru, DanbooruClient, SafebooruClient, YandereClient
+from waifuboard.utils import logger
 
 
 async def main() -> None:
     start = time.time()
-    client = DanbooruClient()
+    client = DanbooruClient(
+        max_clients=None,
+        directory="./downloads",
+        max_connections=100,
+        max_keepalive_connections=20,
+        keepalive_expiry=30.0,
+        max_attempt_number=5,
+        default_headers=True,
+        logger_level=logging.INFO,
+    )
     await client.pools.download(
         limit=1000,
         query={
-            'search[name_matches]': 'k-on!',
+            "search[name_matches]": "k-on!",
         },
         all_page=True,
         concurrency=8,

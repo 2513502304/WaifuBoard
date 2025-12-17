@@ -1,5 +1,10 @@
-from rich.logging import RichHandler
 import logging
+import re
+
+from rich.logging import RichHandler
+
+# 提取文件名中的无效 Windows/MacOS/Linux 路径字符规则
+INVALID_CHARS_PATTERN = re.compile(r'[\\/:*?"<>|]')
 
 # 日志记录
 logging.basicConfig(

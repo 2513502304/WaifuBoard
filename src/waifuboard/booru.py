@@ -5,7 +5,9 @@ Booru Image Board API implementation.
 import asyncio
 import logging
 import os
-import re
+import ssl
+import sys
+import typing
 from typing import Any, Callable
 from urllib.parse import quote, unquote
 
@@ -15,7 +17,23 @@ import pandas as pd
 from aiofiles import os as aioos
 from aiofiles import tempfile as aiotempfile
 from fake_useragent import UserAgent
-from httpx._types import AuthTypes
+from httpx._client import EventHook
+from httpx._config import (
+    Limits,
+    Proxy,
+    Timeout,
+)
+from httpx._transports.base import AsyncBaseTransport
+from httpx._types import (
+    AuthTypes,
+    CertTypes,
+    CookieTypes,
+    HeaderTypes,
+    ProxyTypes,
+    QueryParamTypes,
+    TimeoutTypes,
+)
+from httpx._urls import URL
 from tenacity import AsyncRetrying, RetryCallState, RetryError, TryAgain, retry
 from tenacity.after import after_log
 from tenacity.before import before_log
@@ -25,15 +43,12 @@ from tenacity.retry import retry_if_exception_type
 from tenacity.stop import stop_after_attempt
 from tenacity.wait import wait_exponential
 
-from .utils import logger
+from .utils import INVALID_CHARS_PATTERN, logger
 
 __all__ = [
     "Booru",
     "BooruComponent",
 ]
-
-# 提取文件名中的无效 Windows/MacOS/Linux 路径字符规则
-invalid_chars_pattern = re.compile(r'[\\/:*?"<>|]')
 
 
 class Booru:
@@ -41,23 +56,121 @@ class Booru:
     Base Booru Image Board API
     """
 
-    def __init__(self, *, directory: str = "./downloads"):
+    def __init__(
+        self,
+        *,
+        max_clients: int | None = None,
+        directory: str = "./downloads",
+        auth: AuthTypes | None = None,
+        headers: HeaderTypes | None = None,
+        params: QueryParamTypes | None = None,
+        cookies: CookieTypes | None = None,
+        verify: ssl.SSLContext | str | bool = True,
+        cert: CertTypes | None = None,
+        http1: bool = True,
+        http2: bool = True,
+        proxy: ProxyTypes | None = None,
+        mounts: None | (typing.Mapping[str, AsyncBaseTransport | None]) = None,
+        timeout: TimeoutTypes = Timeout(timeout=30.0),
+        follow_redirects: bool = True,
+        max_connections: int = 100,
+        max_keepalive_connections: int = 20,
+        keepalive_expiry: float = 30.0,
+        max_attempt_number: int = 5,
+        max_redirects: int = 30,
+        event_hooks: None | (typing.Mapping[str, list[EventHook]]) = None,
+        base_url: URL | str = "",
+        transport: AsyncBaseTransport | None = None,
+        trust_env: bool = True,
+        default_headers: bool = True,
+        default_encoding: str | typing.Callable[[bytes], str] = "utf-8",
+        logger_level: int = logging.INFO,
+    ):
+        """
+        包装了 httpx.AsyncClient 的客户端类型，提供了更友好的 API 接口
+
+        Args:
+            max_clients (int | None, optional): 最大客户端数量，用以限制全局并发请求数量的上限，这会影响并发率。若为 None 或一个非正数，则不限制该上限. Defaults to None.
+            directory (str, optional): 当前客户端平台的存储文件根目录. Defaults to "./downloads".
+            auth (AuthTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            headers (HeaderTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            params (QueryParamTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            cookies (CookieTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            verify (ssl.SSLContext | str | bool, optional): See httpx.AsyncClient for more details. Defaults to True.
+            cert (CertTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            http1 (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
+            http2 (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
+            proxy (ProxyTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            mounts (None |, optional): See httpx.AsyncClient for more details. Defaults to None.
+            timeout (TimeoutTypes, optional): See httpx.AsyncClient for more details. Defaults to Timeout(timeout=30.0).
+            follow_redirects (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
+            max_connections (int, optional): 可建立的最大并发连接数. Defaults to 100.
+            max_keepalive_connections (int, optional): 允许连接池在此数值以下维持长连接的数量。该值应小于或等于 max_connections. Defaults to 20.
+            keepalive_expiry (float, optional): 空闲长连接的时间限制（以秒为单位）. Defaults to 30.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            max_redirects (int, optional): See httpx.AsyncClient for more details. Defaults to 30.
+            event_hooks (None |, optional): See httpx.AsyncClient for more details. Defaults to None.
+            base_url (URL | str, optional): See httpx.AsyncClient for more details. Defaults to "".
+            transport (AsyncBaseTransport | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            trust_env (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
+            default_headers (bool, optional): 是否设置默认浏览器 headers. Defaults to True.
+            default_encoding (str | typing.Callable[[bytes], str], optional): See httpx.AsyncClient for more details. Defaults to "utf-8".
+            logger_level (int, optional): 日志级别. Defaults to logging.INFO.
+        """
+        # 最大客户端数量
+        self.max_clients = (
+            max_clients if max_clients is not None and max_clients > 0 else sys.maxsize
+        )
+        self.semaphore = asyncio.Semaphore(self.max_clients)
+
         # 当前客户端平台的存储文件根目录
         self.directory = directory
 
-        self.headers = {
-            "User-Agent": UserAgent().random,
-        }
-        self.params = {}
-        self.client = httpx.AsyncClient(
-            headers=self.headers,
-            params=self.params,
-            http1=True,
-            http2=True,
-            follow_redirects=True,
-            base_url="",
-            timeout=30,
+        # 各种客户端行为限制的配置
+        limits = Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=(
+                max_keepalive_connections
+                if max_connections >= max_keepalive_connections
+                else max_connections
+            ),
+            keepalive_expiry=keepalive_expiry,
         )
+
+        # 最大尝试次数
+        self.max_attempt_number = max_attempt_number if max_attempt_number > 0 else 1
+
+        # 是否设置默认浏览器 headers
+        if headers is None and default_headers:
+            headers = {
+                "User-Agent": UserAgent().random,
+            }
+
+        # 创建底层 httpx 客户端
+        self.client = httpx.AsyncClient(
+            auth=auth,
+            headers=headers,
+            params=params,
+            cookies=cookies,
+            verify=verify,
+            cert=cert,
+            http1=http1,
+            http2=http2,
+            proxy=proxy,
+            mounts=mounts,
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+            limits=limits,
+            max_redirects=max_redirects,
+            event_hooks=event_hooks,
+            base_url=base_url,
+            transport=transport,
+            trust_env=trust_env,
+            default_encoding=default_encoding,
+        )
+
+        # 设置日志级别
+        logger.setLevel(logger_level)
 
     @property
     def auth(self):
@@ -68,7 +181,7 @@ class Booru:
         return self.client.auth
 
     @auth.setter
-    def auth(self, auth: AuthTypes):
+    def auth(self, auth):
         self.client.auth = auth
         logger.info(f"{self.__class__.__name__} auth set to: {auth}")
 
@@ -96,7 +209,10 @@ class Booru:
         self,
         method: str,
         url: str,
-        max_attempt_number: int = 5,
+        *,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -105,11 +221,25 @@ class Booru:
         Args:
             method (str): 请求方法
             url (str): 请求 URL
-            max_attempt_number (int, optional): 最大重试次数. Defaults to 5.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
 
         Returns:
             httpx.Response: 响应对象
         """
+        if max_attempt_number is None:
+            max_attempt_number = self.max_attempt_number
+
+        headers = self.client.headers.copy()
+        if "headers" in kwargs:
+            headers.update(kwargs["headers"])
+            kwargs.pop("headers")
+        if accept_encoding:
+            headers.update({"Accept-Encoding": accept_encoding})
+        if referer:
+            headers.update({"Referer": referer})
+
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(max_attempt_number),
             wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -120,9 +250,12 @@ class Booru:
             reraise=True,
         ):
             with attempt:
-                response = await self.client.request(method=method, url=url, **kwargs)
-                response.raise_for_status()
-                return response
+                async with self.semaphore:
+                    response = await self.client.request(
+                        method=method, url=url, headers=headers, **kwargs
+                    )
+                    response.raise_for_status()
+                    return response
 
     async def get(self, url: str, **kwargs) -> httpx.Response:
         """
@@ -630,7 +763,7 @@ class Booru:
             - 解码经过 url 编码后的基础名称：yande.re 1023280 akiyama_mio cleavage disc_cover dress hirasawa_yui horiguchi_yukiko k-on! kotobuki_tsumugi nakano_azusa screening summer_dress tainaka_ritsu.jpg，由此可见 yandere 文件命名规则为：yande.re {帖子 ID} {按照 a-z 排序后的标签}.文件后缀名
 
         Note:
-            若 remove_invalid_characters 为 False，则永远不要使用该方法返回的规范化名称作为存储文件的文件名，因为解码经过 url 编码后的基础名称中，可能包含非法字符（在按照 a-z 排序后的标签中，可能包含 ： < > : " / \ | ? * 等 Windows 系统中的非法字符，从而引发 OSError: [WinError 123] 文件名、目录名或卷标语法不正确）
+            若 remove_invalid_characters 为 False，则永远不要使用该方法返回的规范化名称作为存储文件的文件名，因为解码经过 url 编码后的基础名称中，可能包含非法字符（在按照 a-z 排序后的标签中，可能包含 ： < > : " / \\ | ? * 等 Windows 系统中的非法字符，从而引发 OSError: [WinError 123] 文件名、目录名或卷标语法不正确）
         """
         # 提取帖子下载链接的文件名
         filename = extract_pattern(url)
@@ -638,7 +771,7 @@ class Booru:
         filename = unquote(filename)
         # 移除文件名中无效的 Windows/MacOS/Linux 路径字符
         if remove_invalid_characters:
-            filename = invalid_chars_pattern.sub("", filename)
+            filename = INVALID_CHARS_PATTERN.sub("", filename)
         return filename
 
 
