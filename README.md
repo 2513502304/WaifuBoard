@@ -32,7 +32,16 @@ from waifuboard import DanbooruClient
 
 async def main():
     # Create a client, which will be used to interact with the API
-	client = DanbooruClient()
+	client = DanbooruClient(
+        max_clients=8,  # The maximum number of clients to create, which is used to limit the upper limit of the global concurrent request count. If it is None or a non-positive number, the limit is not applied.
+        directory="./downloads",  # The root directory for storing files of the current client platform
+        max_connections=100,  # The maximum number of concurrent connections that can be established
+        max_keepalive_connections=20,  # The number of long connections that can be maintained below this value. This value should be less than or equal to max_connections
+        keepalive_expiry=30.0,  # The time limit for idle long connections (in seconds)
+        max_attempt_number=5,  # The maximum number of attempts
+        default_headers=True,  # Whether to set default browser headers
+        logger_level=logging.INFO,  # The log level
+    )
 
 	# Download posts
 	await client.posts.download(
@@ -41,7 +50,6 @@ async def main():
 		tags="k-on!",
 		save_raws=True,
 		save_tags=True,
-		concurrency=8,
 	)
 
 	# Download pools
@@ -53,7 +61,6 @@ async def main():
         all_page=True,
 		save_raws=True,
 		save_tags=True,
-		concurrency=8,
 	)
 
 

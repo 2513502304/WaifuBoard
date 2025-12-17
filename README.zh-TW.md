@@ -32,7 +32,16 @@ from waifuboard import DanbooruClient
 
 async def main():
 	# 建立用戶端，用於與 API 互動
-	client = DanbooruClient()
+	client = DanbooruClient(
+        max_clients=8,  # 最大客戶端數量，用以限制全局並發請求數量的上限，這會影響並發率。若為 None 或一個非正數，則不限制該上限
+        directory="./downloads",  # 當前客戶端平台的存儲文件根目錄
+        max_connections=100,  # 可建立的最大並發連接數
+        max_keepalive_connections=20,  # 允許連接池在此數值以下維持長連接的數量。該值應小於或等於 max_connections
+        keepalive_expiry=30.0,  # 空閒長連接的時間限制（以秒為單位）
+        max_attempt_number=5,  # 最大嘗試次數
+        default_headers=True,  # 是否設置默認瀏覽器 headers
+        logger_level=logging.INFO,  # 日誌級別
+    )
 
 	# 下載帖文
 	await client.posts.download(
@@ -41,7 +50,6 @@ async def main():
 		tags="k-on!",
 		save_raws=True,
 		save_tags=True,
-		concurrency=8,
 	)
 
 	# 下載合集
@@ -53,7 +61,6 @@ async def main():
 		all_page=True,
 		save_raws=True,
 		save_tags=True,
-		concurrency=8,
 	)
 
 

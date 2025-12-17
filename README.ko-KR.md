@@ -32,7 +32,16 @@ from waifuboard import DanbooruClient
 
 async def main():
 	# API와 상호작용할 클라이언트를 생성
-	client = DanbooruClient()
+	client = DanbooruClient(
+        max_clients=8,  # 최대 클라이언트 수는 전역 동시 요청 수의 상한을 제한하는 데 사용되며, 이는 동시성 비율에 영향을 미칩니다. None이거나 양수가 아닌 경우, 이 상한은 제한되지 않습니다.
+        directory="./downloads",  # 현재 클라이언트 플랫폼의 파일 저장 루트 디렉토리
+        max_connections=100,  # 최대 동시 연결 수
+        max_keepalive_connections=20,  # 연결 풀에서 유지할 수 있는 최대 연결 수. max_connections보다 작거나 같아야 합니다.
+        keepalive_expiry=30.0,  # 비활성 장시간 연결의 시간 제한(초 단위)
+        max_attempt_number=5,  # 최대 시도 횟수
+        default_headers=True,  # 기본 브라우저 헤더를 설정할지 여부
+        logger_level=logging.INFO,  # 로깅 수준
+    )
 
 	# 게시물 다운로드
 	await client.posts.download(
@@ -41,7 +50,6 @@ async def main():
 		tags="k-on!",
 		save_raws=True,
 		save_tags=True,
-		concurrency=8,
 	)
 
 	# 풀 다운로드
@@ -53,7 +61,6 @@ async def main():
 		all_page=True,
 		save_raws=True,
 		save_tags=True,
-		concurrency=8,
 	)
 
 
