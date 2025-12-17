@@ -9,7 +9,7 @@ from waifuboard.utils import logger
 async def main() -> None:
     start = time.time()
     client = DanbooruClient(
-        max_clients=None,
+        max_clients=8,
         directory="./downloads",
         max_connections=100,
         max_keepalive_connections=20,
@@ -24,7 +24,6 @@ async def main() -> None:
             "search[name_matches]": "k-on!",
         },
         all_page=True,
-        concurrency=8,
         save_raws=True,
         save_tags=True,
     )

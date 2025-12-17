@@ -345,7 +345,6 @@ class Booru:
         self,
         url: str,
         filepath: str,
-        semaphore: asyncio.Semaphore,
     ) -> tuple[str, str]:
         """
         下载单个文件到指定路径
@@ -353,31 +352,27 @@ class Booru:
         Args:
             url (str): 文件 URL
             filepath (str): 文件存储路径
-            semaphore (asyncio.Semaphore): 信号量，用于控制并发下载的数量
 
         Returns:
             tuple[str, str]. 若下载成功，则返回对应的 (url, filepath) 序列；若下载失败，则返回 None
         """
-        # 使用信号量控制并发下载
-        async with semaphore:
-            try:
-                # 下载文件
-                response = await self.get(url)
-                response.raise_for_status()
-                # 保存文件
-                async with aiofiles.open(filepath, "wb") as f:
-                    await f.write(response.content)
-                return (url, filepath)
-            except httpx.HTTPError as exc:
-                logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
-                return None
+        try:
+            # 下载文件
+            response = await self.get(url)
+            response.raise_for_status()
+            # 保存文件
+            async with aiofiles.open(filepath, "wb") as f:
+                await f.write(response.content)
+            return (url, filepath)
+        except httpx.HTTPError as exc:
+            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            return None
 
     async def concurrent_download_file(
         self,
         urls: pd.Series,
         directory: str,
         extract_pattern: Callable[[str], str] = os.path.basename,
-        concurrency: int = 8,
     ) -> list[tuple[str, str]]:
         """
         并发下载文件到指定目录，忽略已存在的文件
@@ -387,7 +382,6 @@ class Booru:
             urls (pd.Series): 文件 URLs
             directory (str): 文件存储目录
             extract_pattern (Callable[[str], str], optional): 可调用对象，指定从 url 中提取文件名的规则. Defaults to os.path.basename.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
 
         Returns:
             list[tuple[str, str]]: 下载结果列表，每个元素为 (url, filepath) （下载成功）或 None（下载失败）
@@ -414,8 +408,6 @@ class Booru:
         # 检查 URLs 是否为空
         if urls.empty:
             return []
-        # 信号量
-        semaphore = asyncio.Semaphore(concurrency)
         # 创建异步任务列表
         tasks = [
             self.download_file(
@@ -424,7 +416,6 @@ class Booru:
                     directory,
                     extract_pattern(url),
                 ),
-                semaphore=semaphore,
             )
             for url in urls
         ]
@@ -438,7 +429,6 @@ class Booru:
         self,
         raws: pd.DataFrame,
         filepath: str,
-        semaphore: asyncio.Semaphore,
     ) -> tuple[str, str]:
         """
         保存单个元数据到指定路径
@@ -446,35 +436,31 @@ class Booru:
         Args:
             raws (pd.DataFrame): 元数据内容
             filepath (str): 文件存储路径
-            semaphore (asyncio.Semaphore): 信号量，用于控制并发保存的数量
 
         Returns:
             tuple[str, str]. 若保存成功，则返回对应的 (raws, filepath) 序列；若保存失败，则返回 None
         """
-        # 使用信号量控制并发保存
-        async with semaphore:
-            try:
-                # 保存文件
-                async with aiofiles.open(filepath, "w") as f:
-                    await f.write(
-                        raws.to_json(
-                            orient="records",
-                            indent=4,
-                            lines=False,
-                            mode="w",
-                        )
+        try:
+            # 保存文件
+            async with aiofiles.open(filepath, "w") as f:
+                await f.write(
+                    raws.to_json(
+                        orient="records",
+                        indent=4,
+                        lines=False,
+                        mode="w",
                     )
-                return (raws, filepath)
-            except OSError as exc:
-                logger.error(f"{exc.__class__.__name__} for {filepath} - {exc}")
-                return None
+                )
+            return (raws, filepath)
+        except OSError as exc:
+            logger.error(f"{exc.__class__.__name__} for {filepath} - {exc}")
+            return None
 
     async def concurrent_save_raws(
         self,
         raws: list[pd.DataFrame],
         directory: str,
         filenames: pd.Series,
-        concurrency: int = 8,
     ) -> list[tuple[str, str]]:
         """
         并发保存元数据到指定目录，忽略已存在的文件
@@ -483,7 +469,6 @@ class Booru:
             raws (list[pd.DataFrame]): 元数据内容，必须与 filenames 保持相同形状且一一对应
             directory (str): 文件存储目录
             filenames (pd.Series): 文件名，必须与 raws 保持相同形状且一一对应
-            concurrency (int, optional): 并发保存的数量. Defaults to 8.
 
         Returns:
             list[tuple[str, str]]: 保存结果列表，每个元素为 (raws, filepath) （保存成功）或 None（保存失败）
@@ -512,8 +497,6 @@ class Booru:
         # 检查 raws 是否为空
         if not raws or filenames.empty:
             return
-        # 信号量
-        semaphore = asyncio.Semaphore(concurrency)
         # 创建异步任务列表
         tasks = [
             self.save_raws(
@@ -522,7 +505,6 @@ class Booru:
                     directory,  # 文件夹目录
                     filename,  # 文件名
                 ),
-                semaphore=semaphore,
             )
             for raw, filename in zip(raws, filenames)
         ]
@@ -536,7 +518,6 @@ class Booru:
         self,
         tag: str,
         filepath: str,
-        semaphore: asyncio.Semaphore,
         callback: Callable[[str], str] = lambda x: x.replace(" ", ", ").replace(
             "_", " "
         ),
@@ -548,31 +529,27 @@ class Booru:
             tag (str): 标签内容
             filepath (str): 文件存储路径
             callback (Callable[[str], str], optional): 可调用对象，用于后处理标签内容. Defaults to lambda x: x.replace(' ', ', ').replace('_', ' ').
-            semaphore (asyncio.Semaphore): 信号量，用于控制并发保存的数量
 
         Returns:
             tuple[str, str]. 若保存成功，则返回对应的 (tags, filepat) 序列；若保存失败，则返回 None
         """
-        # 使用信号量控制并发保存
-        async with semaphore:
-            try:
-                # 处理标签内容
-                if callback:
-                    tag = callback(tag)
-                # 保存文件
-                async with aiofiles.open(filepath, "w") as f:
-                    await f.write(tag)
-                return (tag, filepath)
-            except OSError as exc:
-                logger.error(f"{exc.__class__.__name__} for {filepath} - {exc}")
-                return None
+        try:
+            # 处理标签内容
+            if callback:
+                tag = callback(tag)
+            # 保存文件
+            async with aiofiles.open(filepath, "w") as f:
+                await f.write(tag)
+            return (tag, filepath)
+        except OSError as exc:
+            logger.error(f"{exc.__class__.__name__} for {filepath} - {exc}")
+            return None
 
     async def concurrent_save_tags(
         self,
         tags: pd.Series,
         directory: str,
         filenames: pd.Series,
-        concurrency: int = 8,
         callback: Callable[[str], str] = lambda x: x.replace(" ", ", ").replace(
             "_", " "
         ),
@@ -585,7 +562,6 @@ class Booru:
             directory (str): 文件存储目录
             filenames (pd.Series): 文件名，必须与 tags 保持相同形状且一一对应
             callback (Callable[[str], str], optional): 可调用对象，用于后处理标签内容. Defaults to lambda x: x.replace(' ', ', ').replace('_', ' ').
-            concurrency (int, optional): 并发保存的数量. Defaults to 8.
 
         Returns:
             list[tuple[str, str]]: 保存结果列表，每个元素为 (tags, filepath) （保存成功）或 None（保存失败）
@@ -614,8 +590,6 @@ class Booru:
         # 检查 tags 是否为空
         if tags.empty or filenames.empty:
             return
-        # 信号量
-        semaphore = asyncio.Semaphore(concurrency)
         # 创建异步任务列表
         tasks = [
             self.save_tags(
@@ -625,7 +599,6 @@ class Booru:
                     filename,  # 文件名
                 ),
                 callback=callback,
-                semaphore=semaphore,
             )
             for tag, filename in zip(tags, filenames)
         ]
@@ -640,7 +613,6 @@ class Booru:
         api: str,
         headers: dict,
         params: dict,
-        semaphore: asyncio.Semaphore,
         callback: Callable[[Any], Any] | None = None,
         **kwargs,
     ) -> list[dict]:
@@ -651,30 +623,27 @@ class Booru:
             api (str): API URL，响应以 json 格式返回
             headers (dict): 请求头
             params (dict): 请求参数
-            semaphore (asyncio.Semaphore): 信号量，用于控制并发下载的数量
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
             list[dict]: 帖子内容列表
         """
-        # 使用信号量控制并发下载
-        async with semaphore:
-            try:
-                # 获取帖子内容
-                response = await self.get(api, headers=headers, params=params, **kwargs)
-                response.raise_for_status()
-                content = response.json()
-                # 处理回调
-                if callback:
-                    content = callback(content)
-                if isinstance(content, list):  # 多个帖子
-                    return content
-                else:  # 单个帖子
-                    return [content]
-            except httpx.HTTPError as exc:
-                logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
-                return []
+        try:
+            # 获取帖子内容
+            response = await self.get(api, headers=headers, params=params, **kwargs)
+            response.raise_for_status()
+            content = response.json()
+            # 处理回调
+            if callback:
+                content = callback(content)
+            if isinstance(content, list):  # 多个帖子
+                return content
+            else:  # 单个帖子
+                return [content]
+        except httpx.HTTPError as exc:
+            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            return []
 
     async def concurrent_fetch_page(
         self,
@@ -684,7 +653,6 @@ class Booru:
         start_page: int,
         end_page: int,
         page_key: str,
-        concurrency: int = 8,
         callback: Callable[[Any], Any] | None = None,
         **kwargs,
     ) -> list[dict]:
@@ -705,8 +673,6 @@ class Booru:
         Returns:
             list[dict]: 帖子内容列表
         """
-        # 信号量
-        semaphore = asyncio.Semaphore(concurrency)
         # 结果列表
         result: list[dict] = []
         # 创建异步任务列表
@@ -719,7 +685,6 @@ class Booru:
                     api,
                     headers=headers,
                     params=params.copy(),
-                    semaphore=semaphore,
                     callback=callback,
                     **kwargs,
                 )

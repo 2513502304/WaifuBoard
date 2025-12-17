@@ -145,7 +145,6 @@ class SafebooruPosts(SafebooruComponent):
         tags: str = '',
         cid: int | None = None,
         id: int | None = None,
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         List
@@ -209,7 +208,6 @@ class SafebooruPosts(SafebooruComponent):
             tags (str, optional): 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。更多信息请参阅 cheatsheet。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换。若设置该参数，则忽略 id 参数，仅获得指定 tags 的帖子. Defaults to ''. 表示搜索全站
             cid (int | None, optional): 帖子的变更 id。这是 Unix 时间，所以如果在同一时间更新，可能会有其他帖子具有相同的值. Defaults to None. 表示不根据 cid 去重
             id (int | None, optional): 帖子 id。若设置该参数，则忽略 limit, pid 参数，仅获得指定 id 的某一个帖子。若超出 safebooru 的最大帖子 id，则自动截断至最大帖子 id。若设置 tags 参数，则忽略该参数. Defaults to None. 表示不查询单独 id
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
 
         Returns:
             pd.DataFrame: 请求结果列表
@@ -244,7 +242,6 @@ class SafebooruPosts(SafebooruComponent):
                 start_page=0,
                 end_page=0,
                 page_key='pid',
-                concurrency=1,
             )
             return pd.DataFrame(result)
         #!优先于除 id 以外的所有请求参数
@@ -275,7 +272,6 @@ class SafebooruPosts(SafebooruComponent):
                 start_page=0,
                 end_page=max_page - 1,
                 page_key='pid',
-                concurrency=concurrency,
             )
 
             # 获取忽略后的帖子
@@ -288,7 +284,6 @@ class SafebooruPosts(SafebooruComponent):
                     start_page=max_page,
                     end_page=max_page,
                     page_key='pid',
-                    concurrency=concurrency,
                 )
                 if ignored_result:
                     # 将忽略的帖子添加到结果列表中
@@ -311,7 +306,6 @@ class SafebooruPosts(SafebooruComponent):
                 start_page=start_page - 1,
                 end_page=end_page - 1,
                 page_key='pid',
-                concurrency=concurrency,
             )
         return pd.DataFrame(result)
 
@@ -330,7 +324,6 @@ class SafebooruPosts(SafebooruComponent):
         id: int | None = None,
         save_raws: bool = False,
         save_tags: bool = False,
-        concurrency: int = 8,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
@@ -345,7 +338,6 @@ class SafebooruPosts(SafebooruComponent):
             id (int | None, optional): 帖子 id。若设置该参数，则忽略 limit, pid 参数，仅获得指定 id 的某一个帖子。若超出 safebooru 的最大帖子 id，则自动截断至最大帖子 id。若设置 tags 参数，则忽略该参数. Defaults to None. 表示不查询单独 id
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
         """
         # 获取当前查询标签下所有页码的帖子列表中的帖子
         posts = await self.list(
@@ -356,7 +348,6 @@ class SafebooruPosts(SafebooruComponent):
             tags=tags,
             cid=cid,
             id=id,
-            concurrency=concurrency,
         )
 
         if posts.empty:
@@ -374,7 +365,6 @@ class SafebooruPosts(SafebooruComponent):
         result: list[tuple[str, str]] = await self.client.concurrent_download_file(
             urls,
             images_directory,
-            concurrency=concurrency,
         )
 
         if not result:
@@ -399,7 +389,6 @@ class SafebooruPosts(SafebooruComponent):
                 raws,
                 raws_directory,
                 filenames=raws_filenames,
-                concurrency=concurrency,
             )
 
         # 保存标签
@@ -415,7 +404,6 @@ class SafebooruPosts(SafebooruComponent):
                 tags,
                 tags_directory,
                 filenames=tags_filenames,
-                concurrency=concurrency,
             )
 
 

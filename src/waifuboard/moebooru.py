@@ -141,7 +141,6 @@ class YanderePosts(MoebooruComponent):
         end_page: int = 1,
         all_page: bool = False,
         tags: str = '',
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         List
@@ -216,7 +215,6 @@ class YanderePosts(MoebooruComponent):
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前查询标签下所有页码的帖子列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
             tags (str, optional): 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换. Defaults to ''. 表示搜索全站
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
 
         Returns:
             pd.DataFrame: 请求结果列表
@@ -250,15 +248,12 @@ class YanderePosts(MoebooruComponent):
                 start_page=1,
                 end_page=gt_page,
                 page_key='page',
-                concurrency=concurrency,
             )
 
             #!仅适用于 posts 页面
             #!为防止遗漏帖子列表，回退至非并发模式获取 html 分页器中的最大页码之后的帖子列表
             logger.info(f"Fetching posts after {gt_page} page for {limit = }, {tags = }")
 
-            # 信号量
-            semaphore = asyncio.Semaphore(concurrency)
             # 当前查询页码
             page = gt_page + 1
             # 直到获取到空数据为止
@@ -268,7 +263,6 @@ class YanderePosts(MoebooruComponent):
                     url,
                     headers=headers,
                     params=params,
-                    semaphore=semaphore,
                 )
                 if content:
                     result.extend(content)
@@ -284,7 +278,6 @@ class YanderePosts(MoebooruComponent):
                 start_page=start_page,
                 end_page=end_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         return pd.DataFrame(result)
 
@@ -317,7 +310,6 @@ class YanderePosts(MoebooruComponent):
         tags: str = '',
         save_raws: bool = False,
         save_tags: bool = False,
-        concurrency: int = 8,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
@@ -330,7 +322,6 @@ class YanderePosts(MoebooruComponent):
             tags (str, optional): 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换. Defaults to ''. 表示搜索全站
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
         """
         # 获取当前查询标签下所有页码的帖子列表中的帖子
         posts = await self.list(
@@ -339,7 +330,6 @@ class YanderePosts(MoebooruComponent):
             end_page=end_page,
             all_page=all_page,
             tags=tags,
-            concurrency=concurrency,
         )
 
         if posts.empty:
@@ -353,7 +343,6 @@ class YanderePosts(MoebooruComponent):
         result: list[tuple[str, str]] = await self.client.concurrent_download_file(
             urls,
             images_directory,
-            concurrency=concurrency,
         )
 
         if not result:
@@ -378,7 +367,6 @@ class YanderePosts(MoebooruComponent):
                 raws,
                 raws_directory,
                 filenames=raws_filenames,
-                concurrency=concurrency,
             )
 
         # 保存标签
@@ -392,7 +380,6 @@ class YanderePosts(MoebooruComponent):
                 tags,
                 tags_directory,
                 filenames=tags_filenames,
-                concurrency=concurrency,
             )
 
 
@@ -620,7 +607,6 @@ class YanderePools(MoebooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         List Pools
@@ -657,7 +643,6 @@ class YanderePools(MoebooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前查询标题下所有页码的图集列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
 
         Returns:
             pd.DataFrame: 请求结果列表
@@ -684,7 +669,6 @@ class YanderePools(MoebooruComponent):
                 start_page=1,
                 end_page=max_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -695,14 +679,12 @@ class YanderePools(MoebooruComponent):
                 start_page=start_page,
                 end_page=end_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         return pd.DataFrame(result)
 
     async def list_posts(
         self,
         id: int,
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         List Posts
@@ -777,7 +759,6 @@ class YanderePools(MoebooruComponent):
 
         Args:
             id (int): 图集 id
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
             
         Returns:
             pd.DataFrame: 请求结果列表
@@ -798,7 +779,6 @@ class YanderePools(MoebooruComponent):
             start_page=1,
             end_page=1,
             page_key='page',
-            concurrency=concurrency,
             callback=lambda x: x.get('posts', []),  # 获取帖子列表
         )
         return pd.DataFrame(result)
@@ -831,7 +811,6 @@ class YanderePools(MoebooruComponent):
         all_page: bool = False,
         save_raws: bool = False,
         save_tags: bool = False,
-        concurrency: int = 8,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标题的图集列表中的帖子；若 all_page 为 True，则下载当前查询标题下所有页码的图集列表中的帖子
@@ -843,7 +822,6 @@ class YanderePools(MoebooruComponent):
             all_page (bool, optional): 是否下载当前查询标题下所有页码的图集列表中的帖子，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
         """
         # 获取当前查询标题下所有页码的图集列表
         pools = await self.list_pools(
@@ -851,7 +829,6 @@ class YanderePools(MoebooruComponent):
             start_page=start_page,
             end_page=end_page,
             all_page=all_page,
-            concurrency=concurrency,
         )
 
         if pools.empty:
@@ -868,7 +845,6 @@ class YanderePools(MoebooruComponent):
             # 获取图集 ID 下所有帖子
             posts = await self.list_posts(
                 id=id,
-                concurrency=concurrency,
             )
 
             # 下载帖子
@@ -878,7 +854,6 @@ class YanderePools(MoebooruComponent):
             result: list[tuple[str, str]] = await self.client.concurrent_download_file(
                 urls,
                 images_directory,
-                concurrency=concurrency,
             )
 
             if not result:
@@ -903,7 +878,6 @@ class YanderePools(MoebooruComponent):
                     raws,
                     raws_directory,
                     filenames=raws_filenames,
-                    concurrency=concurrency,
                 )
 
             # 保存标签
@@ -917,7 +891,6 @@ class YanderePools(MoebooruComponent):
                     tags,
                     tags_directory,
                     filenames=tags_filenames,
-                    concurrency=concurrency,
                 )
 
 

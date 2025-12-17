@@ -191,7 +191,6 @@ class DanbooruPosts(DanbooruComponent):
         tags: str = '',
         random: bool = False,
         md5: str | None = None,
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         Index
@@ -325,7 +324,6 @@ class DanbooruPosts(DanbooruComponent):
             tags (str, optional): 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换. Defaults to ''. 表示搜索全站
             random (bool, optional): 在帖子查询下选择随机抽样。若设置为 True，则仅返回 1 页内容. Defaults to False.
             md5 (str, optional): 搜索 MD5 匹配项。优先于所有其他参数. Defaults to ''.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
             
         Note: 
             danbooru post 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码  
@@ -376,7 +374,6 @@ class DanbooruPosts(DanbooruComponent):
                 start_page=1,
                 end_page=1,
                 page_key='page',
-                concurrency=1,
             )
             return pd.DataFrame(result)
         # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
@@ -403,7 +400,6 @@ class DanbooruPosts(DanbooruComponent):
                 start_page=1,
                 end_page=max_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
@@ -424,14 +420,12 @@ class DanbooruPosts(DanbooruComponent):
                 start_page=start_page,
                 end_page=end_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         return pd.DataFrame(result)
 
     async def show(
         self,
         id: int,
-        semaphore: asyncio.Semaphore,
     ) -> pd.DataFrame:
         """
         Show
@@ -548,7 +542,6 @@ class DanbooruPosts(DanbooruComponent):
         
         Args:
             id (int): 帖子 id
-            semaphore (asyncio.Semaphore): 信号量，用于控制并发下载的数量
             
         Note:
             该方法与指定 md5 参数的 index 方法类似，**但是**返回的结果列表仅包含一个帖子
@@ -566,7 +559,6 @@ class DanbooruPosts(DanbooruComponent):
             url,
             headers=headers,
             params=params,
-            semaphore=semaphore,
         )
         return pd.DataFrame(result)
 
@@ -593,7 +585,6 @@ class DanbooruPosts(DanbooruComponent):
         md5: str | None = None,
         save_raws: bool = False,
         save_tags: bool = False,
-        concurrency: int = 8,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
@@ -608,7 +599,6 @@ class DanbooruPosts(DanbooruComponent):
             md5 (str, optional): 搜索 MD5 匹配项。优先于所有其他参数. Defaults to ''.
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
         """
         # 获取当前查询标签下所有页码的帖子列表中的帖子
         posts = await self.index(
@@ -619,7 +609,6 @@ class DanbooruPosts(DanbooruComponent):
             tags=tags,
             random=random,
             md5=md5,
-            concurrency=concurrency,
         )
 
         if posts.empty:
@@ -637,7 +626,6 @@ class DanbooruPosts(DanbooruComponent):
         result: list[tuple[str, str]] = await self.client.concurrent_download_file(
             urls,
             images_directory,
-            concurrency=concurrency,
         )
 
         if not result:
@@ -662,7 +650,6 @@ class DanbooruPosts(DanbooruComponent):
                 raws,
                 raws_directory,
                 filenames=raws_filenames,
-                concurrency=concurrency,
             )
 
         # 保存标签
@@ -677,7 +664,6 @@ class DanbooruPosts(DanbooruComponent):
                 tags,
                 tags_directory,
                 filenames=tags_filenames,
-                concurrency=concurrency,
             )
 
 
@@ -989,7 +975,6 @@ class DanbooruPools(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         Index
@@ -1061,7 +1046,6 @@ class DanbooruPools(DanbooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的图集列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
             
         Note: 
             danbooru pool 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集数量调整 html 分页器中的最大页码  
@@ -1125,7 +1109,6 @@ class DanbooruPools(DanbooruComponent):
                 start_page=1,
                 end_page=max_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -1145,14 +1128,12 @@ class DanbooruPools(DanbooruComponent):
                 start_page=start_page,
                 end_page=end_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         return pd.DataFrame(result)
 
     async def show(
         self,
         id: int,
-        semaphore: asyncio.Semaphore,
     ) -> pd.DataFrame:
         """
         Show
@@ -1182,7 +1163,6 @@ class DanbooruPools(DanbooruComponent):
         
         Args:
             id (int): 图集 id
-            semaphore (asyncio.Semaphore): 信号量，用于控制并发下载的数量
             
         Note:
             该方法与指定 search[id]/search[name] 参数的 index 方法类似，**但是**返回的结果列表仅包含一个图集
@@ -1200,7 +1180,6 @@ class DanbooruPools(DanbooruComponent):
             url,
             headers=headers,
             params=params,
-            semaphore=semaphore,
         )
         return pd.DataFrame(result)
 
@@ -1233,7 +1212,6 @@ class DanbooruPools(DanbooruComponent):
         all_page: bool = False,
         save_raws: bool = False,
         save_tags: bool = False,
-        concurrency: int = 8,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定搜索参数的图集列表中的帖子；若 all_page 为 True，则下载当前搜索参数下所有页码的图集列表中的帖子
@@ -1246,7 +1224,6 @@ class DanbooruPools(DanbooruComponent):
             all_page (bool, optional): 是否下载当前搜索参数下所有页码的图集列表中的帖子，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
         """
         if query is None:
             query = {}
@@ -1257,7 +1234,6 @@ class DanbooruPools(DanbooruComponent):
             start_page=start_page,
             end_page=end_page,
             all_page=all_page,
-            concurrency=concurrency,
         )
 
         # 过滤空图集
@@ -1278,10 +1254,8 @@ class DanbooruPools(DanbooruComponent):
 
         # 遍历图集列表
         for ids, name in zip(post_ids, names):
-            # 信号量
-            semaphore = asyncio.Semaphore(concurrency)
             # 异步任务列表
-            tasks = [self.client.posts.show(id=id, semaphore=semaphore) for id in ids]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
+            tasks = [self.client.posts.show(id=id) for id in ids]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
             # 并发获取图集 ID 下所有帖子
             task_result: list[pd.DataFrame] = await asyncio.gather(*tasks, return_exceptions=True)
             # 合并所有帖子
@@ -1294,7 +1268,6 @@ class DanbooruPools(DanbooruComponent):
             result: list[tuple[str, str]] = await self.client.concurrent_download_file(
                 urls,
                 images_directory,
-                concurrency=concurrency,
             )
 
             if not result:
@@ -1319,7 +1292,6 @@ class DanbooruPools(DanbooruComponent):
                     raws,
                     raws_directory,
                     filenames=raws_filenames,
-                    concurrency=concurrency,
                 )
 
             # 保存标签
@@ -1334,7 +1306,6 @@ class DanbooruPools(DanbooruComponent):
                     tags,
                     tags_directory,
                     filenames=tags_filenames,
-                    concurrency=concurrency,
                 )
 
 
@@ -1454,7 +1425,6 @@ class DanbooruPostVersions(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         Index
@@ -1539,7 +1509,6 @@ class DanbooruPostVersions(DanbooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的帖子版本列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
             
         Note: 
             danbooru post history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子版本数量调整 html 分页器中的最大页码  
@@ -1604,7 +1573,6 @@ class DanbooruPostVersions(DanbooruComponent):
                 start_page=1,
                 end_page=max_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         # 获取在起始页码与结束页码范围内，指定标题的帖子版本列表
         else:
@@ -1624,7 +1592,6 @@ class DanbooruPostVersions(DanbooruComponent):
                 start_page=start_page,
                 end_page=end_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         return pd.DataFrame(result)
 
@@ -1745,7 +1712,6 @@ class DanbooruPoolVersions(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        concurrency: int = 8,
     ) -> pd.DataFrame:
         """
         Index
@@ -1826,7 +1792,6 @@ class DanbooruPoolVersions(DanbooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的图集版本列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
             
         Note: 
             danbooru pool history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集版本数量调整 html 分页器中的最大页码  
@@ -1908,7 +1873,6 @@ class DanbooruPoolVersions(DanbooruComponent):
                 start_page=1,
                 end_page=max_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         # 获取在起始页码与结束页码范围内，指定标题的图集版本列表
         else:
@@ -1928,6 +1892,5 @@ class DanbooruPoolVersions(DanbooruComponent):
                 start_page=start_page,
                 end_page=end_page,
                 page_key='page',
-                concurrency=concurrency,
             )
         return pd.DataFrame(result)
