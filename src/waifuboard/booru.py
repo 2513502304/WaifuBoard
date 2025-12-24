@@ -170,7 +170,8 @@ class Booru:
         )
 
         # 设置日志级别
-        logger.setLevel(logger_level)
+        logging.getLogger("WaifuBoard").setLevel(logger_level)
+        logging.getLogger("httpx").setLevel(logger_level)
 
     @property
     def auth(self):
