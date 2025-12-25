@@ -69,7 +69,10 @@ class Booru:
         cert: CertTypes | None = None,
         http1: bool = True,
         http2: bool = True,
-        proxy: ProxyTypes | None = None,
+        proxy_url: URL | str | None = None,
+        proxy_auth: tuple[str, str] | None = None,
+        proxy_headers: HeaderTypes | None = None,
+        proxy_ssl_context: ssl.SSLContext | None = None,
         mounts: None | (typing.Mapping[str, AsyncBaseTransport | None]) = None,
         timeout: TimeoutTypes = Timeout(timeout=30.0),
         follow_redirects: bool = True,
@@ -100,7 +103,10 @@ class Booru:
             cert (CertTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
             http1 (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
             http2 (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
-            proxy (ProxyTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
+            proxy_url (URL | str | None, optional): 连接代理服务器时使用的 URL。URL 的 scheme 必须为 "http", "https", "socks5", "socks5h" 之一，URL 的形式为 {scheme}://{[username]:[password]@}{host}:{port}/ 或 {scheme}://{host}:{port}/，例如 "http://127.0.0.1:8080/"。Defaults to None.
+            proxy_auth (tuple[str, str] | None, optional): 任何代理认证信息，格式为 (username, password) 的 two-tuple。可以是 bytes 类型或仅含 ASCII 字符的 str 类型。注意：优先使用 proxy_url 中解析出的 auth 参数，若 proxy_url 中解析不出任何 auth，且 proxy_auth 参数不为 None，则使用 proxy_auth 参数为 proxy_url 添加身份验证凭据。Defaults to None.
+            proxy_headers (HeaderTypes | None, optional): 用于代理请求的任何 HTTP 头部信息。例如 {"Proxy-Authorization": "Basic <username>:<password>"}。Defaults to None.
+            proxy_ssl_context (ssl.SSLContext | None, optional): 用于验证连接代理服务器的 SSL 上下文。如果未指定，将使用默认的 httpcore.default_ssl_context()。Defaults to None.
             mounts (None |, optional): See httpx.AsyncClient for more details. Defaults to None.
             timeout (TimeoutTypes, optional): See httpx.AsyncClient for more details. Defaults to Timeout(timeout=30.0).
             follow_redirects (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
@@ -125,6 +131,17 @@ class Booru:
 
         # 当前客户端平台的存储文件根目录
         self.directory = directory
+        
+        # 代理配置
+        if proxy_url is None:
+            proxy = None
+        else:
+            proxy = Proxy(
+                url=proxy_url,
+                auth=proxy_auth,
+                headers=proxy_headers,
+                ssl_context=proxy_ssl_context,
+            )
 
         # 各种客户端行为限制的配置
         limits = Limits(
