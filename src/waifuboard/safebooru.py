@@ -8,7 +8,6 @@ import re
 
 import httpx
 import pandas as pd
-from fake_useragent import UserAgent
 from httpx._types import AuthTypes
 from lxml import etree
 
@@ -112,9 +111,6 @@ class SafebooruPosts(SafebooruComponent):
             int: html 分页器中的最大 pid
         """
         url = 'index.php'  # 与 safebooru 文档中的 api 接口描述不同，这里剔除了 api 的请求参数，并将其放入 params 中（httpx issue #3621, params 中的参数会完全覆盖 url 中的请求参数，而不是合理地拼接到 url 中）
-        headers = {
-            'User-Agent': UserAgent().random,
-        }
         params = {
             'page': 'post',  # 固定 api 参数
             's': 'list',  # 固定 api 参数
@@ -122,7 +118,7 @@ class SafebooruPosts(SafebooruComponent):
             'tags': tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。更多信息请参阅 cheatsheet。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换。若设置该参数，则忽略 id 参数，仅获得指定 tags 的帖子
         }
         try:
-            response = await self.client.get(url, headers=headers, params=params)
+            response = await self.client.get(url, params=params)
             response.raise_for_status()
             # 解析 html 分页器中的最大 pid
             tree = etree.HTML(response.text)
@@ -216,9 +212,6 @@ class SafebooruPosts(SafebooruComponent):
             limit = 1000
             logger.warning(f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000.")
         url = 'index.php'  # 与 safebooru 文档中的 api 接口描述不同，这里剔除了 api 的请求参数，并将其放入 params 中（httpx issue #3621, params 中的参数会完全覆盖 url 中的请求参数，而不是合理地拼接到 url 中）
-        headers = {
-            'User-Agent': UserAgent().random,
-        }
         params = {
             'page': 'dapi',  # 固定 api 参数
             's': 'post',  # 固定 api 参数
@@ -237,7 +230,6 @@ class SafebooruPosts(SafebooruComponent):
             params['tags'] = ''  # 忽略 tags 参数，防止因为 tags 参数存在而导致无法查询指定 id 的帖子
             result = await self.client.concurrent_fetch_page(  # safebooru 在搜索 id 时，返回的结果列表仅包含一个帖子
                 url,
-                headers=headers,
                 params=params,
                 start_page=0,
                 end_page=0,
@@ -267,7 +259,6 @@ class SafebooruPosts(SafebooruComponent):
 
             result = await self.client.concurrent_fetch_page(
                 url,
-                headers=headers,
                 params=params,
                 start_page=0,
                 end_page=max_page - 1,
@@ -279,7 +270,6 @@ class SafebooruPosts(SafebooruComponent):
                 logger.info(f"Find ignored page number {max_page + 1} for {limit = }, {tags = }, try to fetch them")
                 ignored_result = await self.client.concurrent_fetch_page(
                     url,
-                    headers=headers,
                     params=params,
                     start_page=max_page,
                     end_page=max_page,
@@ -301,7 +291,6 @@ class SafebooruPosts(SafebooruComponent):
 
             result = await self.client.concurrent_fetch_page(
                 url,
-                headers=headers,
                 params=params,
                 start_page=start_page - 1,
                 end_page=end_page - 1,

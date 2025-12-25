@@ -7,7 +7,6 @@ import os
 
 import httpx
 import pandas as pd
-from fake_useragent import UserAgent
 from httpx._types import AuthTypes
 from lxml import etree
 

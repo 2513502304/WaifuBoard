@@ -9,7 +9,7 @@ import ssl
 import sys
 import typing
 from typing import Any, Callable
-from urllib.parse import quote, unquote
+from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
 import httpx
@@ -131,7 +131,7 @@ class Booru:
 
         # 当前客户端平台的存储文件根目录
         self.directory = directory
-        
+
         # 代理配置
         if proxy_url is None:
             proxy = None
@@ -249,14 +249,29 @@ class Booru:
         if max_attempt_number is None:
             max_attempt_number = self.max_attempt_number
 
-        headers = self.client.headers.copy()
+        headers = {}
         if "headers" in kwargs:
-            headers.update(kwargs["headers"])
+            if kwargs["headers"] is not None:
+                headers.update(kwargs["headers"])
             kwargs.pop("headers")
         if accept_encoding:
             headers.update({"Accept-Encoding": accept_encoding})
         if referer:
             headers.update({"Referer": referer})
+
+        #!Fix httpx issue [当 URL 包含请求参数且设置了 params 参数时，URL 中的请求参数会意外消失](https://github.com/encode/httpx/issues/3621)
+        params = {}
+        if "params" in kwargs:
+            if kwargs["params"] is not None:
+                params.update(kwargs["params"])
+            kwargs.pop("params")
+            # 获取 URL 中的请求参数
+            query: dict = parse_qs(urlparse(url).query)
+            # 对重复查询参数仅取第一个作为最终的查询参数
+            for key, value in query.items():
+                if isinstance(value, list):
+                    query[key] = value[0]
+            params = query | params
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(max_attempt_number),
@@ -270,7 +285,7 @@ class Booru:
             with attempt:
                 async with self.semaphore:
                     response = await self.client.request(
-                        method=method, url=url, headers=headers, **kwargs
+                        method=method, url=url, headers=headers, params=params, **kwargs
                     )
                     response.raise_for_status()
                     return response
@@ -629,8 +644,9 @@ class Booru:
     async def fetch_page(
         self,
         api: str,
-        headers: dict,
-        params: dict,
+        *,
+        headers: dict | None = None,
+        params: dict | None = None,
         callback: Callable[[Any], Any] | None = None,
         **kwargs,
     ) -> list[dict]:
@@ -639,8 +655,8 @@ class Booru:
 
         Args:
             api (str): API URL，响应以 json 格式返回
-            headers (dict): 请求头
-            params (dict): 请求参数
+            headers (dict, optional): 请求头. Defaults to None.
+            params (dict, optional): 请求参数. Defaults to None.
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
@@ -666,8 +682,9 @@ class Booru:
     async def concurrent_fetch_page(
         self,
         api: str,
-        headers: dict,
-        params: dict,
+        *,
+        headers: dict | None = None,
+        params: dict | None = None,
         start_page: int,
         end_page: int,
         page_key: str,
@@ -679,8 +696,8 @@ class Booru:
 
         Args:
             api (str): API URL，响应以 json 格式返回
-            headers (dict): 请求头
-            params (dict): 请求参数
+            headers (dict, optional): 请求头. Defaults to None.
+            params (dict, optional): 请求参数. Defaults to None.
             start_page (int): 查询起始页码
             end_page (int): 查询结束页码
             page_key (str): 页码参数的名称，用于在传递的 params 参数中设置页码

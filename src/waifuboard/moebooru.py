@@ -7,7 +7,6 @@ import os
 
 import httpx
 import pandas as pd
-from fake_useragent import UserAgent
 from httpx._types import AuthTypes
 from lxml import etree
 
@@ -112,16 +111,13 @@ class YanderePosts(MoebooruComponent):
             int: html 分页器中的最大页码，实际的最大页码会大于等于该页码
         """
         url = '/post'
-        headers = {
-            'User-Agent': UserAgent().random,
-        }
         params = {
             'limit': limit,  # 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇
             'page': 1,  # 查询页码
             'tags': tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
         }
         try:
-            response = await self.client.get(url, headers=headers, params=params)
+            response = await self.client.get(url, params=params)
             response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
@@ -223,9 +219,6 @@ class YanderePosts(MoebooruComponent):
             limit = 1000
             logger.warning(f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000.")
         url = '/post.json'
-        headers = {
-            'User-Agent': UserAgent().random,
-        }
         params = {
             'limit': limit,  # 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇
             'page': 1,  # 查询页码
@@ -243,7 +236,6 @@ class YanderePosts(MoebooruComponent):
 
             result = await self.client.concurrent_fetch_page(
                 url,
-                headers=headers,
                 params=params,
                 start_page=1,
                 end_page=gt_page,
@@ -261,7 +253,6 @@ class YanderePosts(MoebooruComponent):
                 params.update({'page': page})
                 content: list[dict] = await self.client.fetch_page(
                     url,
-                    headers=headers,
                     params=params,
                 )
                 if content:
@@ -273,7 +264,6 @@ class YanderePosts(MoebooruComponent):
         else:
             result = await self.client.concurrent_fetch_page(
                 url,
-                headers=headers,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
@@ -580,15 +570,12 @@ class YanderePools(MoebooruComponent):
             int: html 分页器中的最大页码，实际的最大页码等于该页码
         """
         url = '/pool'
-        headers = {
-            'User-Agent': UserAgent().random,
-        }
         params = {
             'query': query,  # 查询标题
             'page': 1,  # 查询页码
         }
         try:
-            response = await self.client.get(url, headers=headers, params=params)
+            response = await self.client.get(url, params=params)
             response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
@@ -648,9 +635,6 @@ class YanderePools(MoebooruComponent):
             pd.DataFrame: 请求结果列表
         """
         url = '/pool.json'
-        headers = {
-            'User-Agent': UserAgent().random,
-        }
         params = {
             'query': query,  # 查询标题
             'page': 1,  # 查询页码
@@ -664,7 +648,6 @@ class YanderePools(MoebooruComponent):
 
             result = await self.client.concurrent_fetch_page(
                 url,
-                headers=headers,
                 params=params,
                 start_page=1,
                 end_page=max_page,
@@ -674,7 +657,6 @@ class YanderePools(MoebooruComponent):
         else:
             result = await self.client.concurrent_fetch_page(
                 url,
-                headers=headers,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
@@ -764,9 +746,6 @@ class YanderePools(MoebooruComponent):
             pd.DataFrame: 请求结果列表
         """
         url = '/pool/show.json'
-        headers = {
-            'User-Agent': UserAgent().random,
-        }
         params = {
             'id': id,  # 图集的 ID 号码
             'page': 1,  # 查询页码
@@ -774,7 +753,6 @@ class YanderePools(MoebooruComponent):
         # 结果列表
         result: list[dict] = await self.client.concurrent_fetch_page(
             url,
-            headers=headers,
             params=params,
             start_page=1,
             end_page=1,
