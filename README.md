@@ -33,8 +33,12 @@ from waifuboard import DanbooruClient
 async def main():
     # Create a client, which will be used to interact with the API
 	client = DanbooruClient(
-        max_clients=8,  # The maximum number of clients to create, which is used to limit the upper limit of the global concurrent request count. If it is None or a non-positive number, the limit is not applied.
+        max_clients=8,  # The maximum number of clients to create, which is used to limit the upper limit of the global concurrent request count. If it is None or a non-positive number, the limit is not applied
         directory="./downloads",  # The root directory for storing files of the current client platform
+        proxy_url="http://127.0.0.1:7890",  # The URL used to connect to the proxy server. The scheme must be one of "http", "https", "socks5", "socks5h", and the form is {scheme}://{[username]:[password]@}{host}:{port}/ or {scheme}://{host}:{port}/, for example "http://127.0.0.1:8080/"
+        proxy_auth=None,  # Any proxy authentication information, in the format of a two-tuple of (username, password). Can be bytes type or str type containing only ASCII characters. Note: The auth parameter parsed from proxy_url is used first. If no auth is parsed from proxy_url and proxy_auth is not None, the proxy_auth parameter is used to add authentication credentials to proxy_url
+        proxy_headers=None,  # Any HTTP header information for proxy requests. For example, {"Proxy-Authorization": "Basic <username>:<password>"}
+        proxy_ssl_context=None,  # The SSL context used to verify the connection to the proxy server. If not specified, the default httpcore.default_ssl_context() is used
         max_connections=100,  # The maximum number of concurrent connections that can be established
         max_keepalive_connections=20,  # The number of long connections that can be maintained below this value. This value should be less than or equal to max_connections
         keepalive_expiry=30.0,  # The time limit for idle long connections (in seconds)

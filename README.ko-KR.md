@@ -33,10 +33,14 @@ from waifuboard import DanbooruClient
 async def main():
 	# API와 상호작용할 클라이언트를 생성
 	client = DanbooruClient(
-        max_clients=8,  # 최대 클라이언트 수는 전역 동시 요청 수의 상한을 제한하는 데 사용되며, 이는 동시성 비율에 영향을 미칩니다. None이거나 양수가 아닌 경우, 이 상한은 제한되지 않습니다.
+        max_clients=8,  # 최대 클라이언트 수는 전역 동시 요청 수의 상한을 제한하는 데 사용되며, 이는 동시성 비율에 영향을 미칩니다. None이거나 양수가 아닌 경우, 이 상한은 제한되지 않습니다
         directory="./downloads",  # 현재 클라이언트 플랫폼의 파일 저장 루트 디렉토리
+        proxy_url="http://127.0.0.1:7890",  # 프록시 서버에 연결할 때 사용되는 URL. URL의 scheme은 "http", "https", "socks5", "socks5h" 중 하나여야 하며, 형식은 {scheme}://{[username]:[password]@}{host}:{port}/ 또는 {scheme}://{host}:{port}/ 이며, 예: "http://127.0.0.1:8080/"
+        proxy_auth=None,  # 프록시 요청에 사용되는 모든 인증 정보. (username, password) 형식의 two-tuple. bytes 타입 또는 仅含 ASCII 문자의 str 타입 일 수 있습니다. 참고: proxy_url에서 파싱된 auth 매개변수가 먼저 사용됩니다. proxy_url에서 인증 정보를 파싱하지 못하고 proxy_auth 매개변수가 None이 아닌 경우, proxy_auth 매개변수가 proxy_url에 인증 정보를 추가하는 데 사용됩니다
+        proxy_headers=None,  # 프록시 요청에 사용되는 모든 HTTP 헤더 정보. 예: {"Proxy-Authorization": "Basic <username>:<password>"}
+        proxy_ssl_context=None,  # 프록시 서버에 연결할 때 사용되는 SSL 컨텍스트. 지정되지 않은 경우, 기본 httpcore.default_ssl_context()가 사용됩니다
         max_connections=100,  # 최대 동시 연결 수
-        max_keepalive_connections=20,  # 연결 풀에서 유지할 수 있는 최대 연결 수. max_connections보다 작거나 같아야 합니다.
+        max_keepalive_connections=20,  # 연결 풀에서 유지할 수 있는 최대 연결 수. max_connections보다 작거나 같아야 합니다
         keepalive_expiry=30.0,  # 비활성 장시간 연결의 시간 제한(초 단위)
         max_attempt_number=5,  # 최대 시도 횟수
         default_headers=True,  # 기본 브라우저 헤더를 설정할지 여부

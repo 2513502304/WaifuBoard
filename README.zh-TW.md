@@ -35,6 +35,10 @@ async def main():
 	client = DanbooruClient(
         max_clients=8,  # 最大客戶端數量，用以限制全局並發請求數量的上限，這會影響並發率。若為 None 或一個非正數，則不限制該上限
         directory="./downloads",  # 當前客戶端平台的存儲文件根目錄
+        proxy_url="http://127.0.0.1:7890",  # 連接代理服務器時使用的 URL。URL 的 scheme 必須為 "http", "https", "socks5", "socks5h" 之一，URL 的形式為 {scheme}://{[username]:[password]@}{host}:{port}/ 或 {scheme}://{host}:{port}/，例如 "http://127.0.0.1:8080/"
+        proxy_auth=None,  # 任何代理認證信息，格式为 (username, password) 的 two-tuple。可以是 bytes 类型或仅含 ASCII 字符的 str 类型。注意：優先使用 proxy_url 中解析出的 auth 參數，若 proxy_url 中解析不出任何 auth，且 proxy_auth 參數不為 None，則使用 proxy_auth 參數為 proxy_url 添加身份驗證憑據
+        proxy_headers=None,  # 用於代理請求的任何 HTTP 頭部信息。例如 {"Proxy-Authorization": "Basic <username>:<password>"}
+        proxy_ssl_context=None,  # 用於驗證連接代理服務器的 SSL 上下文。如果未指定，將使用默認的 httpcore.default_ssl_context()
         max_connections=100,  # 可建立的最大並發連接數
         max_keepalive_connections=20,  # 允許連接池在此數值以下維持長連接的數量。該值應小於或等於 max_connections
         keepalive_expiry=30.0,  # 空閒長連接的時間限制（以秒為單位）

@@ -33,10 +33,14 @@ from waifuboard import DanbooruClient
 async def main():
 	# API とやり取りするためのクライアントを作成
 	client = DanbooruClient(
-        max_clients=8,  # 最大クライアント数は、グローバルな同時リクエスト数の上限を制限するためのもので、これは同時実行率に影響を与えます。Noneまたは正数でない値の場合、この上限は制限されません。
+        max_clients=8,  # 最大クライアント数は、グローバルな同時リクエスト数の上限を制限するためのもので、これは同時実行率に影響を与えます。Noneまたは正数でない値の場合、この上限は制限されません
         directory="./downloads",  # 現在のクライアントプラットフォームのファイル保存ルートディレクトリ
+        proxy_url="http://127.0.0.1:7890",  # プロキシサーバーに接続するための URL。URL の scheme は "http", "https", "socks5", "socks5h" のいずれかでなければならず、形式は {scheme}://{[username]:[password]@}{host}:{port}/ または {scheme}://{host}:{port}/ で、例: "http://127.0.0.1:8080/"
+        proxy_auth=None,  # プロキシ要求に使用されるすべての認証情報。(username, password) 形式の two-tuple。bytes 型または仅含 ASCII 文字の str 型である可能性があります。注意: proxy_url から解析された auth パラメータが最初に使用されます。proxy_url から認証情報を解析できず、proxy_auth パラメータが None でない場合、proxy_auth パラメータが proxy_url に認証情報を追加するために使用されます
+        proxy_headers=None,  # プロキシ要求に使用されるすべての HTTP ヘッダー情報。例: {"Proxy-Authorization": "Basic <username>:<password>"}
+        proxy_ssl_context=None,  # プロキシサーバーに接続するための SSL コンテキスト。指定されていない場合、デフォルトの httpcore.default_ssl_context() が使用されます
         max_connections=100,  # 最大同時接続数
-        max_keepalive_connections=20,  # 接続プールで維持できる最大接続数。max_connectionsより小さいか等しい必要があります。
+        max_keepalive_connections=20,  # 接続プールで維持できる最大接続数。max_connectionsより小さいか等しい必要があります
         keepalive_expiry=30.0,  # 非アクティブな長時間接続の時間制限（秒単位）
         max_attempt_number=5,  # 最大試行回数
         default_headers=True,  # デフォルトのブラウザヘッダーを設定するかどうか
