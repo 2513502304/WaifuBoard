@@ -13,6 +13,7 @@ from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
 import httpx
+import orjson
 import pandas as pd
 from aiofiles import os as aioos
 from aiofiles import tempfile as aiotempfile
@@ -267,11 +268,11 @@ class Booru:
             kwargs.pop("params")
             # 获取 URL 中的请求参数
             query: dict = parse_qs(urlparse(url).query)
-            # 对重复查询参数仅取第一个作为最终的查询参数
-            for key, value in query.items():
-                if isinstance(value, list):
-                    query[key] = value[0]
             params = query | params
+        #!requests/httpx 无法*正确处理* dict 类型的请求参数，需要将其转换为 JSON 字符串
+        for key, value in params.items():
+            if isinstance(value, dict):
+                params[key] = orjson.dumps(value).decode("utf-8")
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(max_attempt_number),
