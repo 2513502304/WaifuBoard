@@ -247,6 +247,8 @@ class Booru:
         Returns:
             httpx.Response: 响应对象
         """
+        parsed_url = urlparse(url)
+
         if max_attempt_number is None:
             max_attempt_number = self.max_attempt_number
 
@@ -261,14 +263,11 @@ class Booru:
             headers.update({"Referer": referer})
 
         #!Fix httpx issue [当 URL 包含请求参数且设置了 params 参数时，URL 中的请求参数会意外消失](https://github.com/encode/httpx/issues/3621)
-        params = {}
+        params = parse_qs(parsed_url.query)  # 获取 URL 中的请求参数
         if "params" in kwargs:
             if kwargs["params"] is not None:
                 params.update(kwargs["params"])
             kwargs.pop("params")
-            # 获取 URL 中的请求参数
-            query: dict = parse_qs(urlparse(url).query)
-            params = query | params
         #!requests/httpx 无法*正确处理* dict 类型的请求参数，需要将其转换为 JSON 字符串
         for key, value in params.items():
             if isinstance(value, dict):
