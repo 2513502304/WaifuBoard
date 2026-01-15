@@ -5,10 +5,11 @@ Booru Image Board API implementation.
 import asyncio
 import logging
 import os
+import random
 import ssl
 import sys
 import typing
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
@@ -229,6 +230,9 @@ class Booru:
         method: str,
         url: str,
         *,
+        request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
@@ -240,6 +244,9 @@ class Booru:
         Args:
             method (str): 请求方法
             url (str): 请求 URL
+            request_sleep_time (int | float | Iterable[int | float] | None, optional): 每次请求时的间隔时间（即使该请求成功），可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
@@ -274,8 +281,11 @@ class Booru:
                 params[key] = orjson.dumps(value).decode("utf-8")
 
         async for attempt in AsyncRetrying(
+            sleep=asyncio.sleep,
             stop=stop_after_attempt(max_attempt_number),
-            wait=wait_exponential(multiplier=1, min=1, max=10),
+            wait=wait_exponential(
+                multiplier=1, min=min_retry_sleep_time, max=max_retry_sleep_time
+            ),
             retry=retry_if_exception_type(Exception),
             before=before_log(logger, logging.DEBUG),
             after=after_log(logger, logging.DEBUG),
@@ -283,6 +293,18 @@ class Booru:
             reraise=True,
         ):
             with attempt:
+                if attempt.retry_state.attempt_number == 1:
+                    if request_sleep_time:
+                        await asyncio.sleep(
+                            request_sleep_time := (
+                                random.choice(request_sleep_time)
+                                if isinstance(request_sleep_time, Iterable)
+                                else request_sleep_time
+                            )
+                        )
+                        logger.info(
+                            f"Sleep for {request_sleep_time} seconds before requesting {url}"
+                        )
                 async with self.semaphore:
                     response = await self.client.request(
                         method=method, url=url, headers=headers, params=params, **kwargs
