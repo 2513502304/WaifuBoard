@@ -8,8 +8,9 @@ import os
 import random
 import ssl
 import sys
+import time
 import typing
-from typing import Any, Callable, Iterable
+from typing import Any, Literal, Callable, Iterable
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
@@ -230,7 +231,8 @@ class Booru:
         method: str,
         url: str,
         *,
-        request_sleep_time: int | float | Iterable[int | float] | None = None,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
         min_retry_sleep_time: int | float = 1.0,
         max_retry_sleep_time: int | float = 10.0,
         max_attempt_number: int | None = None,
@@ -244,12 +246,14 @@ class Booru:
         Args:
             method (str): 请求方法
             url (str): 请求 URL
-            request_sleep_time (int | float | Iterable[int | float] | None, optional): 每次请求时的间隔时间（即使该请求成功），可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
             min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
             max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
             httpx.Response: 响应对象
@@ -294,25 +298,42 @@ class Booru:
         ):
             with attempt:
                 if attempt.retry_state.attempt_number == 1:
-                    if request_sleep_time:
-                        await asyncio.sleep(
-                            request_sleep_time := (
-                                random.choice(request_sleep_time)
-                                if isinstance(request_sleep_time, Iterable)
-                                else request_sleep_time
-                            )
+                    if pre_request_sleep_time:
+                        pre_request_sleep_time = (
+                            random.choice(pre_request_sleep_time)
+                            if isinstance(pre_request_sleep_time, Iterable)
+                            else pre_request_sleep_time
                         )
                         logger.info(
-                            f"Sleep for {request_sleep_time} seconds before requesting {url}"
+                            f"Sleep for {pre_request_sleep_time} seconds before requesting {url}"
                         )
+                        if pre_request_sleep_type == "sync":
+                            time.sleep(pre_request_sleep_time)
+                        elif pre_request_sleep_type == "async":
+                            await asyncio.sleep(pre_request_sleep_time)
+                        else:
+                            raise ValueError(
+                                f"Invalid pre_request_sleep_type: {pre_request_sleep_type = }"
+                            )
                 async with self.semaphore:
                     response = await self.client.request(
                         method=method, url=url, headers=headers, params=params, **kwargs
                     )
-                    response.raise_for_status()
-                    return response
+                    return response.raise_for_status()
 
-    async def get(self, url: str, **kwargs) -> httpx.Response:
+    async def get(
+        self,
+        url: str,
+        *,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         使用底层 httpx 客户端发送 GET 请求
 
@@ -320,11 +341,34 @@ class Booru:
             url (str): 请求 URL
 
         Returns:
-            httpx.Response: _description_
+            httpx.Response: 响应对象
         """
-        return await self.request("GET", url, **kwargs)
+        return await self.request(
+            "GET",
+            url,
+            pre_request_sleep_type=pre_request_sleep_type,
+            pre_request_sleep_time=pre_request_sleep_time,
+            min_retry_sleep_time=min_retry_sleep_time,
+            max_retry_sleep_time=max_retry_sleep_time,
+            max_attempt_number=max_attempt_number,
+            accept_encoding=accept_encoding,
+            referer=referer,
+            **kwargs,
+        )
 
-    async def options(self, url: str, **kwargs) -> httpx.Response:
+    async def options(
+        self,
+        url: str,
+        *,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         使用底层 httpx 客户端发送 OPTIONS 请求
 
@@ -334,9 +378,32 @@ class Booru:
         Returns:
             httpx.Response: 响应对象
         """
-        return await self.request("OPTIONS", url, **kwargs)
+        return await self.request(
+            "OPTIONS",
+            url,
+            pre_request_sleep_type=pre_request_sleep_type,
+            pre_request_sleep_time=pre_request_sleep_time,
+            min_retry_sleep_time=min_retry_sleep_time,
+            max_retry_sleep_time=max_retry_sleep_time,
+            max_attempt_number=max_attempt_number,
+            accept_encoding=accept_encoding,
+            referer=referer,
+            **kwargs,
+        )
 
-    async def head(self, url: str, **kwargs) -> httpx.Response:
+    async def head(
+        self,
+        url: str,
+        *,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         使用底层 httpx 客户端发送 HEAD 请求
 
@@ -346,9 +413,32 @@ class Booru:
         Returns:
             httpx.Response: 响应对象
         """
-        return await self.request("HEAD", url, **kwargs)
+        return await self.request(
+            "HEAD",
+            url,
+            pre_request_sleep_type=pre_request_sleep_type,
+            pre_request_sleep_time=pre_request_sleep_time,
+            min_retry_sleep_time=min_retry_sleep_time,
+            max_retry_sleep_time=max_retry_sleep_time,
+            max_attempt_number=max_attempt_number,
+            accept_encoding=accept_encoding,
+            referer=referer,
+            **kwargs,
+        )
 
-    async def post(self, url: str, **kwargs) -> httpx.Response:
+    async def post(
+        self,
+        url: str,
+        *,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         使用底层 httpx 客户端发送 POST 请求
 
@@ -358,9 +448,32 @@ class Booru:
         Returns:
             httpx.Response: 响应对象
         """
-        return await self.request("POST", url, **kwargs)
+        return await self.request(
+            "POST",
+            url,
+            pre_request_sleep_type=pre_request_sleep_type,
+            pre_request_sleep_time=pre_request_sleep_time,
+            min_retry_sleep_time=min_retry_sleep_time,
+            max_retry_sleep_time=max_retry_sleep_time,
+            max_attempt_number=max_attempt_number,
+            accept_encoding=accept_encoding,
+            referer=referer,
+            **kwargs,
+        )
 
-    async def put(self, url: str, **kwargs) -> httpx.Response:
+    async def put(
+        self,
+        url: str,
+        *,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         使用底层 httpx 客户端发送 PUT 请求
 
@@ -370,9 +483,32 @@ class Booru:
         Returns:
             httpx.Response: 响应对象
         """
-        return await self.request("PUT", url, **kwargs)
+        return await self.request(
+            "PUT",
+            url,
+            pre_request_sleep_type=pre_request_sleep_type,
+            pre_request_sleep_time=pre_request_sleep_time,
+            min_retry_sleep_time=min_retry_sleep_time,
+            max_retry_sleep_time=max_retry_sleep_time,
+            max_attempt_number=max_attempt_number,
+            accept_encoding=accept_encoding,
+            referer=referer,
+            **kwargs,
+        )
 
-    async def patch(self, url: str, **kwargs) -> httpx.Response:
+    async def patch(
+        self,
+        url: str,
+        *,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         使用底层 httpx 客户端发送 PATCH 请求
 
@@ -382,9 +518,32 @@ class Booru:
         Returns:
             httpx.Response: 响应对象
         """
-        return await self.request("PATCH", url, **kwargs)
+        return await self.request(
+            "PATCH",
+            url,
+            pre_request_sleep_type=pre_request_sleep_type,
+            pre_request_sleep_time=pre_request_sleep_time,
+            min_retry_sleep_time=min_retry_sleep_time,
+            max_retry_sleep_time=max_retry_sleep_time,
+            max_attempt_number=max_attempt_number,
+            accept_encoding=accept_encoding,
+            referer=referer,
+            **kwargs,
+        )
 
-    async def delete(self, url: str, **kwargs) -> httpx.Response:
+    async def delete(
+        self,
+        url: str,
+        *,
+        pre_request_sleep_type: Literal["sync", "async"] = "sync",
+        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
+        min_retry_sleep_time: int | float = 1.0,
+        max_retry_sleep_time: int | float = 10.0,
+        max_attempt_number: int | None = None,
+        accept_encoding: str | None = None,
+        referer: str | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """
         使用底层 httpx 客户端发送 DELETE 请求
 
@@ -394,7 +553,18 @@ class Booru:
         Returns:
             httpx.Response: 响应对象
         """
-        return await self.request("DELETE", url, **kwargs)
+        return await self.request(
+            "DELETE",
+            url,
+            pre_request_sleep_type=pre_request_sleep_type,
+            pre_request_sleep_time=pre_request_sleep_time,
+            min_retry_sleep_time=min_retry_sleep_time,
+            max_retry_sleep_time=max_retry_sleep_time,
+            max_attempt_number=max_attempt_number,
+            accept_encoding=accept_encoding,
+            referer=referer,
+            **kwargs,
+        )
 
     async def download_file(
         self,
