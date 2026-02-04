@@ -15,9 +15,13 @@ logging.basicConfig(
         RichHandler(
             level=logging.NOTSET,
             rich_tracebacks=True,
+            tracebacks_width=None,
+            tracebacks_code_width=None,
             tracebacks_show_locals=True,
             tracebacks_suppress=[],
             tracebacks_max_frames=100,
+            locals_max_length=None,
+            locals_max_string=None,
         )
     ],
     force=False,
