@@ -339,7 +339,15 @@ class Booru:
 
         Args:
             url (str): 请求 URL
-
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            
         Returns:
             httpx.Response: 响应对象
         """
@@ -374,6 +382,14 @@ class Booru:
 
         Args:
             url (str): 请求 URL
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
             httpx.Response: 响应对象
@@ -409,6 +425,14 @@ class Booru:
 
         Args:
             url (str): 请求 URL
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
             httpx.Response: 响应对象
@@ -444,7 +468,15 @@ class Booru:
 
         Args:
             url (str): 请求 URL
-
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            
         Returns:
             httpx.Response: 响应对象
         """
@@ -479,7 +511,15 @@ class Booru:
 
         Args:
             url (str): 请求 URL
-
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            
         Returns:
             httpx.Response: 响应对象
         """
@@ -514,7 +554,15 @@ class Booru:
 
         Args:
             url (str): 请求 URL
-
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            
         Returns:
             httpx.Response: 响应对象
         """
@@ -549,7 +597,15 @@ class Booru:
 
         Args:
             url (str): 请求 URL
-
+            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
+            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
+            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
+            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
+            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
+            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
+            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            
         Returns:
             httpx.Response: 响应对象
         """
