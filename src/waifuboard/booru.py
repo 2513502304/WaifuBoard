@@ -238,6 +238,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -253,6 +254,7 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
@@ -319,6 +321,11 @@ class Booru:
                     response = await self.client.request(
                         method=method, url=url, headers=headers, params=params, **kwargs
                     )
+                    if (
+                        attempt.retry_state.attempt_number == max_attempt_number
+                        and not reraise
+                    ):
+                        return response
                     return response.raise_for_status()
 
     async def get(
@@ -332,6 +339,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -346,8 +354,9 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
-            
+
         Returns:
             httpx.Response: 响应对象
         """
@@ -361,6 +370,7 @@ class Booru:
             max_attempt_number=max_attempt_number,
             accept_encoding=accept_encoding,
             referer=referer,
+            reraise=reraise,
             **kwargs,
         )
 
@@ -375,6 +385,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -389,6 +400,7 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
@@ -404,6 +416,7 @@ class Booru:
             max_attempt_number=max_attempt_number,
             accept_encoding=accept_encoding,
             referer=referer,
+            reraise=reraise,
             **kwargs,
         )
 
@@ -418,6 +431,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -432,6 +446,7 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
@@ -447,6 +462,7 @@ class Booru:
             max_attempt_number=max_attempt_number,
             accept_encoding=accept_encoding,
             referer=referer,
+            reraise=reraise,
             **kwargs,
         )
 
@@ -461,6 +477,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -475,8 +492,9 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
-            
+
         Returns:
             httpx.Response: 响应对象
         """
@@ -490,6 +508,7 @@ class Booru:
             max_attempt_number=max_attempt_number,
             accept_encoding=accept_encoding,
             referer=referer,
+            reraise=reraise,
             **kwargs,
         )
 
@@ -504,6 +523,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -518,8 +538,9 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
-            
+
         Returns:
             httpx.Response: 响应对象
         """
@@ -533,6 +554,7 @@ class Booru:
             max_attempt_number=max_attempt_number,
             accept_encoding=accept_encoding,
             referer=referer,
+            reraise=reraise,
             **kwargs,
         )
 
@@ -547,6 +569,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -561,8 +584,9 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
-            
+
         Returns:
             httpx.Response: 响应对象
         """
@@ -576,6 +600,7 @@ class Booru:
             max_attempt_number=max_attempt_number,
             accept_encoding=accept_encoding,
             referer=referer,
+            reraise=reraise,
             **kwargs,
         )
 
@@ -590,6 +615,7 @@ class Booru:
         max_attempt_number: int | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
+        reraise: bool = True,
         **kwargs,
     ) -> httpx.Response:
         """
@@ -604,8 +630,9 @@ class Booru:
             max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
             accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
             referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
+            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
-            
+
         Returns:
             httpx.Response: 响应对象
         """
@@ -619,6 +646,7 @@ class Booru:
             max_attempt_number=max_attempt_number,
             accept_encoding=accept_encoding,
             referer=referer,
+            reraise=reraise,
             **kwargs,
         )
 
