@@ -164,6 +164,9 @@ class Booru:
         if headers is None and default_headers:
             headers = {
                 "User-Agent": UserAgent().random,
+                "Accept-Encoding": "gzip, deflate, br",
+                "Accept": "*/*",
+                "Connection": "keep-alive",
             }
 
         # 创建底层 httpx 客户端
