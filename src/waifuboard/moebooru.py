@@ -4,9 +4,11 @@ Moebooru Image Board API implementation.
 
 import asyncio
 import os
+from typing import AsyncIterable
 
 import httpx
 import pandas as pd
+from asyncstdlib import enumerate as aenumerate
 from httpx._types import AuthTypes
 from lxml import etree
 
@@ -114,9 +116,9 @@ class YanderePosts(MoebooruComponent):
             "page": 1,  # 查询页码
             "tags": tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
         }
+
         try:
             response = await self.client.get(url, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
             # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
@@ -135,7 +137,7 @@ class YanderePosts(MoebooruComponent):
         end_page: int = 1,
         all_page: bool = False,
         tags: str = "",
-    ) -> pd.DataFrame:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         List
 
@@ -210,22 +212,22 @@ class YanderePosts(MoebooruComponent):
             all_page (bool, optional): 是否获取当前查询标签下所有页码的帖子列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
             tags (str, optional): 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换. Defaults to ''. 表示搜索全站
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
         """
         if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 1000
             logger.warning(
                 f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
             )
+
         url = "/post.json"
         params = {
             "limit": limit,  # 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇
             "page": 1,  # 查询页码
             "tags": tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
         }
-        # 结果列表
-        result: list[dict] = []
+
         # 获取当前查询标签下所有页码的帖子列表
         if all_page:
             gt_page = await self.list_gt_page(  # 获取 html 分页器中的最大页码
@@ -236,13 +238,14 @@ class YanderePosts(MoebooruComponent):
                 f"Maximum page number is greater than or equal to {gt_page} for {limit = }, {tags = }"
             )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
                 start_page=1,
                 end_page=gt_page,
                 page_key="page",
-            )
+            ):
+                yield res
 
             #!仅适用于 posts 页面
             #!为防止遗漏帖子列表，回退至非并发模式获取 html 分页器中的最大页码之后的帖子列表
@@ -260,20 +263,21 @@ class YanderePosts(MoebooruComponent):
                     params=params,
                 )
                 if content:
-                    result.extend(content)
+                    yield content
                     page += 1
                 else:
                     break
+
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
                 page_key="page",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res
 
     def create(self):
         # TODO
@@ -304,6 +308,7 @@ class YanderePosts(MoebooruComponent):
         tags: str = "",
         save_raws: bool = False,
         save_tags: bool = False,
+        overwrite: bool = False,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
@@ -316,76 +321,82 @@ class YanderePosts(MoebooruComponent):
             tags (str, optional): 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换. Defaults to ''. 表示搜索全站
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
         """
         # 获取当前查询标签下所有页码的帖子列表中的帖子
-        posts = await self.list(
-            limit=limit,
-            start_page=start_page,
-            end_page=end_page,
-            all_page=all_page,
-            tags=tags,
-        )
+        async for i, posts in aenumerate(
+            self.list(
+                limit=limit,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
+                tags=tags,
+            )
+        ):
+            posts = pd.DataFrame(posts)
 
-        if posts.empty:
-            logger.info(f"All of the posts are empty.")
-            return
+            if posts.empty:
+                logger.info(f"All of the posts {i + 1} are empty.")
+                continue
 
-        # 下载帖子
-        urls = posts["file_url"]  # 帖子 URLs
-        posts_directory = os.path.join(
-            self.directory, f"{tags if tags != '' else 'all'}"
-        )  # 帖子文件目录
-        images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
-        result: list[tuple[str, str]] = await self.client.concurrent_download_file(
-            urls,
-            images_directory,
-        )
+            # 下载帖子
+            urls = posts["file_url"]  # 帖子 URLs
+            posts_directory = os.path.join(
+                self.directory, f"{tags if tags != '' else 'all'}"
+            )  # 帖子文件目录
+            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
 
-        if not result:
+            success_count, failure_count = 0, 0
+            async for index, res in aenumerate(
+                self.client.concurrent_download_file(
+                    urls,
+                    images_directory,
+                )
+            ):
+                if res is None:
+                    failure_count += 1
+                    continue
+                else:
+                    success_count += 1
+
+                url, filepath = res
+
+                # 保存帖子 api 响应的元数据（json 格式）
+                if save_raws:
+                    # 保存元数据
+                    raws = posts.loc[[index]]  # 筛选后的元数据
+                    raws_directory = os.path.join(
+                        posts_directory, "raws"
+                    )  # 元数据文件目录
+                    raws_filename = (
+                        os.path.splitext(os.path.basename(filepath))[0] + ".json"
+                    )  # 元数据文件名
+                    await self.client.save_raws(
+                        raws,
+                        directory=raws_directory,
+                        filename=raws_filename,
+                        overwrite=overwrite,
+                    )
+
+                # 保存标签
+                if save_tags:
+                    # 帖子标签
+                    tags = posts.at[index, "tags"]  # 筛选后的 tags
+                    tags_directory = os.path.join(
+                        posts_directory, "tags"
+                    )  # 标签文件目录
+                    tags_filename = (
+                        os.path.splitext(os.path.basename(filepath))[0] + ".txt"
+                    )  # 标签文件名
+                    await self.client.save_tags(
+                        tags,
+                        directory=tags_directory,
+                        filename=tags_filename,
+                        overwrite=overwrite,
+                    )
+
             logger.info(
-                f"Downloaded 0 successful, 0 failed for posts: {posts['id'].tolist()}"
-            )
-            return
-
-        # 获取下载成功的帖子 url 以及文件路径
-        successful_urls = pd.Series([res[0] for res in result if res is not None])
-        successful_filepaths = pd.Series([res[1] for res in result if res is not None])
-        logger.info(
-            f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for posts: {posts['id'].tolist()}"
-        )
-
-        # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
-        successful_url_indices = urls[urls.isin(successful_urls)].index
-
-        # 保存帖子 api 响应的元数据（json 格式）
-        if save_raws:
-            # 保存元数据
-            raws = [
-                posts.loc[[index]] for index in successful_url_indices
-            ]  # 筛选后的元数据
-            raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
-            raws_filenames = successful_filepaths.apply(
-                lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
-            )  # 元数据文件名
-            await self.client.concurrent_save_raws(
-                raws,
-                raws_directory,
-                filenames=raws_filenames,
-            )
-
-        # 保存标签
-        if save_tags:
-            # 帖子标签
-            tags = posts["tags"]
-            tags = tags[successful_url_indices]  # 筛选后的 tags
-            tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
-            tags_filenames = successful_filepaths.apply(
-                lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
-            )  # 标签文件名
-            await self.client.concurrent_save_tags(
-                tags,
-                tags_directory,
-                filenames=tags_filenames,
+                f"Downloaded {success_count} successful, {failure_count} failed for posts: {posts['id'].tolist()}"
             )
 
 
@@ -590,9 +601,9 @@ class YanderePools(MoebooruComponent):
             "query": query,  # 查询标题
             "page": 1,  # 查询页码
         }
+
         try:
             response = await self.client.get(url, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
             # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
@@ -610,7 +621,7 @@ class YanderePools(MoebooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-    ) -> pd.DataFrame:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         List Pools
 
@@ -647,16 +658,15 @@ class YanderePools(MoebooruComponent):
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前查询标题下所有页码的图集列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            AsyncIterable[list[dict] | None]: 若获取成功，则返回对应的图集内容列表；若获取失败，则返回 None
         """
         url = "/pool.json"
         params = {
             "query": query,  # 查询标题
             "page": 1,  # 查询页码
         }
-        # 结果列表
-        result: list[dict] = []
+
         # 获取当前查询标题下所有页码的图集列表
         if all_page:
             max_page = await self.list_pools_page(
@@ -664,28 +674,30 @@ class YanderePools(MoebooruComponent):
             )  # 获取 html 分页器中的最大页码
             logger.info(f"Maximum page number is equal to {max_page} for {query = }")
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
                 start_page=1,
                 end_page=max_page,
                 page_key="page",
-            )
+            ):
+                yield res
+
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
                 page_key="page",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res
 
     async def list_posts(
         self,
         id: int,
-    ) -> pd.DataFrame:
+    ) -> list[dict] | None:
         """
         List Posts
 
@@ -761,23 +773,21 @@ class YanderePools(MoebooruComponent):
             id (int): 图集 id
 
         Returns:
-            pd.DataFrame: 请求结果列表
+            list[dict] | None: 若获取成功，则返回对应的图集内容列表；若获取失败，则返回 None
         """
         url = "/pool/show.json"
         params = {
             "id": id,  # 图集的 ID 号码
             "page": 1,  # 查询页码
         }
+
         # 结果列表
-        result: list[dict] = await self.client.concurrent_fetch_page(
+        result: list[dict] = await self.client.fetch_page(
             url,
             params=params,
-            start_page=1,
-            end_page=1,
-            page_key="page",
             callback=lambda x: x.get("posts", []),  # 获取帖子列表
         )
-        return pd.DataFrame(result)
+        return result
 
     def update_pool(self):
         # TODO
@@ -807,6 +817,7 @@ class YanderePools(MoebooruComponent):
         all_page: bool = False,
         save_raws: bool = False,
         save_tags: bool = False,
+        overwrite: bool = False,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标题的图集列表中的帖子；若 all_page 为 True，则下载当前查询标题下所有页码的图集列表中的帖子
@@ -818,85 +829,95 @@ class YanderePools(MoebooruComponent):
             all_page (bool, optional): 是否下载当前查询标题下所有页码的图集列表中的帖子，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
         """
         # 获取当前查询标题下所有页码的图集列表
-        pools = await self.list_pools(
-            query=query,
-            start_page=start_page,
-            end_page=end_page,
-            all_page=all_page,
-        )
-
-        if pools.empty:
-            logger.info(f"All of the pools are empty.")
-            return
-
-        # 图集 id
-        ids = pools["id"]
-        # 图集名称
-        names = pools["name"]
-
-        # 遍历图集列表
-        for id, name in zip(ids, names):
-            # 获取图集 ID 下所有帖子
-            posts = await self.list_posts(
-                id=id,
+        async for i, pools in aenumerate(
+            self.list_pools(
+                query=query,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
             )
+        ):
+            pools = pd.DataFrame(pools)
 
-            # 下载帖子
-            urls = posts["file_url"]  # 帖子 URLs
-            posts_directory = os.path.join(self.directory, f"{name}")  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
-            result: list[tuple[str, str]] = await self.client.concurrent_download_file(
-                urls,
-                images_directory,
-            )
-
-            if not result:
-                logger.info(f"Downloaded 0 successful, 0 failed for pool: {name}")
+            if pools.empty:
+                logger.info(f"All of the pools {i + 1} are empty.")
                 continue
 
-            # 获取下载成功的帖子 url 以及文件路径
-            successful_urls = pd.Series([res[0] for res in result if res is not None])
-            successful_filepaths = pd.Series(
-                [res[1] for res in result if res is not None]
-            )
-            logger.info(
-                f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for pool: {name}"
-            )
+            # 图集 id
+            ids = pools["id"]
+            # 图集名称
+            names = pools["name"]
 
-            # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
-            successful_url_indices = urls[urls.isin(successful_urls)].index
-
-            # 保存帖子 api 响应的元数据（json 格式）
-            if save_raws:
-                # 保存元数据
-                raws = [
-                    posts.loc[[index]] for index in successful_url_indices
-                ]  # 筛选后的元数据
-                raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
-                raws_filenames = successful_filepaths.apply(
-                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
-                )  # 元数据文件名
-                await self.client.concurrent_save_raws(
-                    raws,
-                    raws_directory,
-                    filenames=raws_filenames,
+            # 遍历图集列表
+            for id, name in zip(ids, names):
+                # 获取图集 ID 下所有帖子
+                posts = await self.list_posts(
+                    id=id,
                 )
+                posts = pd.DataFrame(posts)
 
-            # 保存标签
-            if save_tags:
-                # 帖子标签
-                tags = posts["tags"]
-                tags = tags[successful_url_indices]  # 筛选后的 tags
-                tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
-                tags_filenames = successful_filepaths.apply(
-                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
-                )  # 标签文件名
-                await self.client.concurrent_save_tags(
-                    tags,
-                    tags_directory,
-                    filenames=tags_filenames,
+                # 下载帖子
+                urls = posts["file_url"]  # 帖子 URLs
+                posts_directory = os.path.join(
+                    self.directory, f"{name}"
+                )  # 帖子文件目录
+                images_directory = os.path.join(
+                    posts_directory, "images"
+                )  # 图像文件目录
+
+                success_count, failure_count = 0, 0
+                async for index, res in aenumerate(
+                    self.client.concurrent_download_file(
+                        urls,
+                        images_directory,
+                    )
+                ):
+                    if res is None:
+                        failure_count += 1
+                        continue
+                    else:
+                        success_count += 1
+                    url, filepath = res
+
+                    # 保存帖子 api 响应的元数据（json 格式）
+                    if save_raws:
+                        # 保存元数据
+                        raws = posts.loc[[index]]  # 筛选后的元数据
+                        raws_directory = os.path.join(
+                            posts_directory, "raws"
+                        )  # 元数据文件目录
+                        raws_filename = (
+                            os.path.splitext(os.path.basename(filepath))[0] + ".json"
+                        )  # 元数据文件名
+                        await self.client.save_raws(
+                            raws,
+                            directory=raws_directory,
+                            filename=raws_filename,
+                            overwrite=overwrite,
+                        )
+
+                    # 保存标签
+                    if save_tags:
+                        # 帖子标签
+                        tags = posts.at[index, "tags"]  # 筛选后的 tags
+                        tags_directory = os.path.join(
+                            posts_directory, "tags"
+                        )  # 标签文件目录
+                        tags_filename = (
+                            os.path.splitext(os.path.basename(filepath))[0] + ".txt"
+                        )  # 标签文件名
+                        await self.client.save_tags(
+                            tags,
+                            directory=tags_directory,
+                            filename=tags_filename,
+                            overwrite=overwrite,
+                        )
+
+                logger.info(
+                    f"Downloaded {success_count} successful, {failure_count} failed for pool: {name}"
                 )
 
 

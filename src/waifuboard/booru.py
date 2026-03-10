@@ -10,7 +10,7 @@ import ssl
 import sys
 import time
 import typing
-from typing import Any, Literal, Callable, Iterable
+from typing import Any, Literal, Callable, Iterable, AsyncIterable
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
@@ -657,7 +657,7 @@ class Booru:
         self,
         url: str,
         filepath: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str] | None:
         """
         下载单个文件到指定路径
 
@@ -666,12 +666,11 @@ class Booru:
             filepath (str): 文件存储路径
 
         Returns:
-            tuple[str, str]. 若下载成功，则返回对应的 (url, filepath) 序列；若下载失败，则返回 None
+            tuple[str, str] | None. 若下载成功，则返回对应的 (url, filepath)；若下载失败，则返回 None
         """
         try:
             # 下载文件
             response = await self.get(url)
-            response.raise_for_status()
             # 保存文件
             async with aiofiles.open(filepath, "wb") as f:
                 await f.write(response.content)
@@ -685,7 +684,7 @@ class Booru:
         urls: pd.Series,
         directory: str,
         extract_pattern: Callable[[str], str] = os.path.basename,
-    ) -> list[tuple[str, str]]:
+    ) -> AsyncIterable[tuple[str, str] | None]:
         """
         并发下载文件到指定目录，忽略已存在的文件
         文件名默认为 urls 中 url 的基础名称（即 url 的最后一个组件），也可以传递可调用对象给 extract_pattern 参数，以指定从 url 中提取文件名的规则
@@ -695,8 +694,8 @@ class Booru:
             directory (str): 文件存储目录
             extract_pattern (Callable[[str], str], optional): 可调用对象，指定从 url 中提取文件名的规则. Defaults to os.path.basename.
 
-        Returns:
-            list[tuple[str, str]]: 下载结果列表，每个元素为 (url, filepath) （下载成功）或 None（下载失败）
+        Yields:
+            tuple[str, str] | None. 若下载成功，则返回对应的 (url, filepath)；若下载失败，则返回 None
         """
         # 预处理 urls 中的空值
         urls = urls.dropna(axis=0, inplace=False, ignore_index=False)
@@ -719,7 +718,7 @@ class Booru:
                 )
         # 检查 URLs 是否为空
         if urls.empty:
-            return []
+            return
         # 创建异步任务列表
         tasks = [
             self.download_file(
@@ -732,26 +731,46 @@ class Booru:
             for url in urls
         ]
         # 并发执行下载任务
-        result: list[tuple[str, str]] = await asyncio.gather(
-            *tasks, return_exceptions=True
-        )
-        return result
+        for t in asyncio.as_completed(tasks):
+            try:
+                result = await t
+                yield result
+            except Exception as exc:
+                logger.error(f"{exc.__class__.__name__}: {exc}")
+                yield None
 
     async def save_raws(
         self,
         raws: pd.DataFrame,
-        filepath: str,
-    ) -> tuple[str, str]:
+        directory: str,
+        filename: str,
+        overwrite: bool = False,
+    ) -> tuple[str, str, str] | None:
         """
         保存单个元数据到指定路径
 
         Args:
             raws (pd.DataFrame): 元数据内容
-            filepath (str): 文件存储路径
+            directory (str): 文件存储目录
+            filename (str): 文件名
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
 
         Returns:
-            tuple[str, str]. 若保存成功，则返回对应的 (raws, filepath) 序列；若保存失败，则返回 None
+            tuple[str, str, str]. 若保存成功，则返回对应的 (raws, directory, filename)；若保存失败，则返回 None
         """
+        # 创建目录
+        if not await aioos.path.exists(directory):
+            await aioos.makedirs(directory)
+        # 若存在已有文件，则根据 overwrite 参数决定是否覆盖
+        else:
+            if not overwrite:
+                # 获取已有文件列表
+                files = await aioos.listdir(directory)
+                if filename in files:
+                    logger.warning(f"File {filename} already exists in {directory}")
+                    return None
+
+        filepath = os.path.join(directory, filename)
         try:
             # 保存文件
             async with aiofiles.open(filepath, "w") as f:
@@ -763,88 +782,47 @@ class Booru:
                         mode="w",
                     )
                 )
-            return (raws, filepath)
+            return (raws, directory, filename)
         except OSError as exc:
             logger.error(f"{exc.__class__.__name__} for {filepath} - {exc}")
             return None
 
-    async def concurrent_save_raws(
-        self,
-        raws: list[pd.DataFrame],
-        directory: str,
-        filenames: pd.Series,
-    ) -> list[tuple[str, str]]:
-        """
-        并发保存元数据到指定目录，忽略已存在的文件
-
-        Args:
-            raws (list[pd.DataFrame]): 元数据内容，必须与 filenames 保持相同形状且一一对应
-            directory (str): 文件存储目录
-            filenames (pd.Series): 文件名，必须与 raws 保持相同形状且一一对应
-
-        Returns:
-            list[tuple[str, str]]: 保存结果列表，每个元素为 (raws, filepath) （保存成功）或 None（保存失败）
-        """
-        if len(raws) != filenames.size:
-            logger.error("Raws and filenames must have the same shape")
-            return []
-        # 创建目录
-        if not await aioos.path.exists(directory):
-            await aioos.makedirs(directory)
-        # 若存在已有文件，则将其过滤
-        else:
-            # 获取已有文件列表
-            files = await aioos.listdir(directory)
-            # 批 raws 大小
-            patch_size = len(raws)
-            # 过滤已有文件
-            filenames = filenames[filenames.isin(files)]
-            raws = [raws[index] for index in filenames.index]
-            # 已过滤文件数量
-            filter_size = patch_size - len(raws)
-            if filter_size > 0:
-                logger.info(
-                    f"Filtered {filter_size} existing files from {patch_size} raws"
-                )
-        # 检查 raws 是否为空
-        if not raws or filenames.empty:
-            return
-        # 创建异步任务列表
-        tasks = [
-            self.save_raws(
-                raws=raw,
-                filepath=os.path.join(
-                    directory,  # 文件夹目录
-                    filename,  # 文件名
-                ),
-            )
-            for raw, filename in zip(raws, filenames)
-        ]
-        # 并发执行保存任务
-        result: list[tuple[str, str]] = await asyncio.gather(
-            *tasks, return_exceptions=True
-        )
-        return result
-
     async def save_tags(
         self,
         tag: str,
-        filepath: str,
+        directory: str,
+        filename: str,
+        overwrite: bool = False,
         callback: Callable[[str], str] = lambda x: x.replace(" ", ", ").replace(
             "_", " "
         ),
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str] | None:
         """
         保存单个标签到指定路径
 
         Args:
             tag (str): 标签内容
-            filepath (str): 文件存储路径
+            directory (str): 文件存储目录
+            filename (str): 文件名
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
             callback (Callable[[str], str], optional): 可调用对象，用于后处理标签内容. Defaults to lambda x: x.replace(' ', ', ').replace('_', ' ').
 
         Returns:
-            tuple[str, str]. 若保存成功，则返回对应的 (tags, filepat) 序列；若保存失败，则返回 None
+            tuple[str, str, str]. 若保存成功，则返回对应的 (tags, directory, filename)；若保存失败，则返回 None
         """
+        # 创建目录
+        if not await aioos.path.exists(directory):
+            await aioos.makedirs(directory)
+        # 若存在已有文件，则根据 overwrite 参数决定是否覆盖
+        else:
+            if not overwrite:
+                # 获取已有文件列表
+                files = await aioos.listdir(directory)
+                if filename in files:
+                    logger.warning(f"File {filename} already exists in {directory}")
+                    return None
+
+        filepath = os.path.join(directory, filename)
         try:
             # 处理标签内容
             if callback:
@@ -852,73 +830,10 @@ class Booru:
             # 保存文件
             async with aiofiles.open(filepath, "w") as f:
                 await f.write(tag)
-            return (tag, filepath)
+            return (tag, directory, filename)
         except OSError as exc:
             logger.error(f"{exc.__class__.__name__} for {filepath} - {exc}")
             return None
-
-    async def concurrent_save_tags(
-        self,
-        tags: pd.Series,
-        directory: str,
-        filenames: pd.Series,
-        callback: Callable[[str], str] = lambda x: x.replace(" ", ", ").replace(
-            "_", " "
-        ),
-    ) -> list[tuple[str, str]]:
-        """
-        并发保存标签到指定目录，忽略已存在的文件
-
-        Args:
-            tags (pd.Series): 标签内容，必须与 filenames 保持相同形状且一一对应
-            directory (str): 文件存储目录
-            filenames (pd.Series): 文件名，必须与 tags 保持相同形状且一一对应
-            callback (Callable[[str], str], optional): 可调用对象，用于后处理标签内容. Defaults to lambda x: x.replace(' ', ', ').replace('_', ' ').
-
-        Returns:
-            list[tuple[str, str]]: 保存结果列表，每个元素为 (tags, filepath) （保存成功）或 None（保存失败）
-        """
-        if tags.size != filenames.size:
-            logger.error("Tags and filenames must have the same shape")
-            return []
-        # 创建目录
-        if not await aioos.path.exists(directory):
-            await aioos.makedirs(directory)
-        # 若存在已有文件，则将其过滤
-        else:
-            # 获取已有文件列表
-            files = await aioos.listdir(directory)
-            # 批 tags 大小
-            patch_size = tags.size
-            # 过滤已有文件
-            filenames = filenames[filenames.isin(files)]
-            tags = tags[filenames.index]
-            # 已过滤文件数量
-            filter_size = patch_size - tags.size
-            if filter_size > 0:
-                logger.info(
-                    f"Filtered {filter_size} existing files from {patch_size} tags"
-                )
-        # 检查 tags 是否为空
-        if tags.empty or filenames.empty:
-            return
-        # 创建异步任务列表
-        tasks = [
-            self.save_tags(
-                tag=tag,
-                filepath=os.path.join(
-                    directory,  # 文件夹目录
-                    filename,  # 文件名
-                ),
-                callback=callback,
-            )
-            for tag, filename in zip(tags, filenames)
-        ]
-        # 并发执行保存任务
-        result: list[tuple[str, str]] = await asyncio.gather(
-            *tasks, return_exceptions=True
-        )
-        return result
 
     async def fetch_page(
         self,
@@ -940,12 +855,11 @@ class Booru:
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
         Returns:
-            list[dict]: 帖子内容列表
+            list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
         """
         try:
             # 获取帖子内容
             response = await self.get(api, headers=headers, params=params, **kwargs)
-            response.raise_for_status()
             content = response.json()
             # 处理回调
             if callback:
@@ -969,7 +883,7 @@ class Booru:
         page_key: str,
         callback: Callable[[Any], Any] | None = None,
         **kwargs,
-    ) -> list[dict]:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         并发获取多个页面的帖子内容
 
@@ -984,11 +898,9 @@ class Booru:
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
             **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
 
-        Returns:
-            list[dict]: 帖子内容列表
+        Yields:
+            list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
         """
-        # 结果列表
-        result: list[dict] = []
         # 创建异步任务列表
         tasks = []
         # 获取指定页码的帖子列表
@@ -1004,13 +916,13 @@ class Booru:
                 )
             )
         # 并发执行下载任务
-        task_result: list[list[dict]] = await asyncio.gather(
-            *tasks, return_exceptions=True
-        )
-        for content in task_result:
-            if content:
-                result.extend(content)
-        return result
+        for t in asyncio.as_completed(tasks):
+            try:
+                result = await t
+                yield result
+            except Exception as exc:
+                logger.error(f"{exc.__class__.__name__}: {exc}")
+                yield None
 
     @staticmethod
     def parse_url(

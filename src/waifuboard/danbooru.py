@@ -4,9 +4,11 @@ Danbooru Image Board API implementation.
 
 import asyncio
 import os
+from typing import AsyncIterable
 
 import httpx
 import pandas as pd
+from asyncstdlib import enumerate as aenumerate
 from httpx._types import AuthTypes
 from lxml import etree
 
@@ -152,6 +154,7 @@ class DanbooruPosts(DanbooruComponent):
         # 随机抽样，仅返回 1 页内容
         if random:
             return 1
+
         url = "/posts"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -162,9 +165,9 @@ class DanbooruPosts(DanbooruComponent):
             "tags": tags,  # 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
             "random": random,  # 在帖子查询下选择随机抽样
         }
+
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
@@ -185,7 +188,7 @@ class DanbooruPosts(DanbooruComponent):
         tags: str = "",
         random: bool = False,
         md5: str | None = None,
-    ) -> pd.DataFrame:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         Index
 
@@ -400,14 +403,15 @@ class DanbooruPosts(DanbooruComponent):
             }
             ```
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
         """
         if limit > 200:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 200
             logger.warning(
                 f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 200."
             )
+
         url = "/posts.json"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -419,20 +423,19 @@ class DanbooruPosts(DanbooruComponent):
             "random": random,  # 在帖子查询下选择随机抽样
             "md5": md5,  # 搜索 MD5 匹配项。优先于所有其他参数
         }
-        # 结果列表
-        result: list[dict] = []
+
         if md5 is not None:
-            result = await self.client.concurrent_fetch_page(  # danbooru 在搜索 md5 时，返回的结果列表仅包含一个帖子
+            result = await self.client.fetch_page(  # danbooru 在搜索 md5 时，返回的结果列表仅包含一个帖子
                 url,
                 headers=headers,
                 params=params,
-                start_page=1,
-                end_page=1,
-                page_key="page",
             )
-            return pd.DataFrame(result)
+            yield result
+            return
+
         # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
         self.client.MAX_PAGE
+
         # 获取当前查询标签下所有页码的帖子列表
         if all_page:
             max_page = await self.index_page(  # 获取 html 分页器中的最大页码
@@ -451,14 +454,16 @@ class DanbooruPosts(DanbooruComponent):
                     f"Maximum page number is set to {max_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=1,
                 end_page=max_page,
                 page_key="page",
-            )
+            ):
+                yield res
+
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
             if start_page > self.client.MAX_PAGE:
@@ -474,20 +479,20 @@ class DanbooruPosts(DanbooruComponent):
                     f"End page is set to {end_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
                 page_key="page",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res
 
     async def show(
         self,
         id: int,
-    ) -> pd.DataFrame:
+    ) -> list[dict] | None:
         """
         Show
 
@@ -608,20 +613,21 @@ class DanbooruPosts(DanbooruComponent):
             该方法与指定 md5 参数的 index 方法类似，**但是**返回的结果列表仅包含一个帖子
 
         Returns:
-            pd.DataFrame: 请求结果列表
+            list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
         """
         url = f"/posts/{id}.json"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {}
+
         # 结果列表
         result = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个帖子
             url,
             headers=headers,
             params=params,
         )
-        return pd.DataFrame(result)
+        return result
 
     def create(self):
         # TODO
@@ -646,6 +652,7 @@ class DanbooruPosts(DanbooruComponent):
         md5: str | None = None,
         save_raws: bool = False,
         save_tags: bool = False,
+        overwrite: bool = False,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
@@ -660,83 +667,92 @@ class DanbooruPosts(DanbooruComponent):
             md5 (str, optional): 搜索 MD5 匹配项。优先于所有其他参数. Defaults to ''.
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
         """
         # 获取当前查询标签下所有页码的帖子列表中的帖子
-        posts = await self.index(
-            limit=limit,
-            start_page=start_page,
-            end_page=end_page,
-            all_page=all_page,
-            tags=tags,
-            random=random,
-            md5=md5,
-        )
+        async for i, posts in aenumerate(
+            self.index(
+                limit=limit,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
+                tags=tags,
+                random=random,
+                md5=md5,
+            )
+        ):
+            posts = pd.DataFrame(posts)
 
-        if posts.empty:
-            logger.info(f"All of the posts are empty.")
-            return
+            if posts.empty:
+                logger.info(f"All of the posts {i + 1} are empty.")
+                continue
 
-        # 下载帖子
-        urls = posts["file_url"]  # 帖子 URLs
-        if md5 is not None:  # 存储文件目录
-            posts_directory = os.path.join(self.directory, f"{md5}")  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
-        else:
-            posts_directory = os.path.join(
-                self.directory, f"{tags if tags != '' else 'all'}"
-            )  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
-        result: list[tuple[str, str]] = await self.client.concurrent_download_file(
-            urls,
-            images_directory,
-        )
+            # 下载帖子
+            urls = posts["file_url"]  # 帖子 URLs
+            if md5 is not None:  # 存储文件目录
+                posts_directory = os.path.join(self.directory, f"{md5}")  # 帖子文件目录
+                images_directory = os.path.join(
+                    posts_directory, "images"
+                )  # 图像文件目录
+            else:
+                posts_directory = os.path.join(
+                    self.directory, f"{tags if tags != '' else 'all'}"
+                )  # 帖子文件目录
+                images_directory = os.path.join(
+                    posts_directory, "images"
+                )  # 图像文件目录
 
-        if not result:
+            success_count, failure_count = 0, 0
+            async for index, res in aenumerate(
+                self.client.concurrent_download_file(
+                    urls,
+                    images_directory,
+                )
+            ):
+                if res is None:
+                    failure_count += 1
+                    continue
+                else:
+                    success_count += 1
+
+                url, filepath = res
+
+                # 保存帖子 api 响应的元数据（json 格式）
+                if save_raws:
+                    # 保存元数据
+                    raws = posts.loc[[index]]  # 筛选后的元数据
+                    raws_directory = os.path.join(
+                        posts_directory, "raws"
+                    )  # 元数据文件目录
+                    raws_filename = (
+                        os.path.splitext(os.path.basename(filepath))[0] + ".json"
+                    )  # 元数据文件名
+                    await self.client.save_raws(
+                        raws,
+                        directory=raws_directory,
+                        filename=raws_filename,
+                        overwrite=overwrite,
+                    )
+
+                # 保存标签
+                if save_tags:
+                    # 帖子标签
+                    tags = posts.at[index, "tag_string"]  # 筛选后的 tags
+                    tags_directory = os.path.join(
+                        posts_directory, "tags"
+                    )  # 标签文件目录
+                    tags_filename = (
+                        os.path.splitext(os.path.basename(filepath))[0] + ".txt"
+                    )  # 标签文件名
+                    await self.client.save_tags(
+                        tags,
+                        directory=tags_directory,
+                        filename=tags_filename,
+                        overwrite=overwrite,
+                    )
+
             logger.info(
-                f"Downloaded 0 successful, 0 failed for posts: {posts['id'].tolist()}"
-            )
-            return
-
-        # 获取下载成功的帖子 url 以及文件路径
-        successful_urls = pd.Series([res[0] for res in result if res is not None])
-        successful_filepaths = pd.Series([res[1] for res in result if res is not None])
-        logger.info(
-            f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for posts: {posts['id'].tolist()}"
-        )
-
-        # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
-        successful_url_indices = urls[urls.isin(successful_urls)].index
-
-        # 保存帖子 api 响应的元数据（json 格式）
-        if save_raws:
-            # 保存元数据
-            raws = [
-                posts.loc[[index]] for index in successful_url_indices
-            ]  # 筛选后的元数据
-            raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
-            raws_filenames = successful_filepaths.apply(
-                lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
-            )  # 元数据文件名
-            await self.client.concurrent_save_raws(
-                raws,
-                raws_directory,
-                filenames=raws_filenames,
-            )
-
-        # 保存标签
-        if save_tags:
-            # 帖子标签
-            tags = posts["tag_string"]
-            # 保存标签
-            tags = tags[successful_url_indices]  # 筛选后的 tags
-            tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
-            tags_filenames = successful_filepaths.apply(
-                lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
-            )  # 标签文件名
-            await self.client.concurrent_save_tags(
-                tags,
-                tags_directory,
-                filenames=tags_filenames,
+                f"Downloaded {success_count} successful, {failure_count} failed for posts: {posts['id'].tolist()}"
             )
 
 
@@ -788,6 +804,7 @@ class DanbooruTags(DanbooruComponent):
                 "search[hide_empty]": False,
                 "search[order]": "date",
             }
+
         url = "/tags"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -798,9 +815,9 @@ class DanbooruTags(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
+
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
@@ -821,7 +838,7 @@ class DanbooruTags(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-    ):
+    ) -> AsyncIterable[list[dict] | None]:
         """
         Index
 
@@ -929,8 +946,8 @@ class DanbooruTags(DanbooruComponent):
             }
             ```
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            AsyncIterable[list[dict] | None]: 若获取成功，则返回对应的 tags 内容列表；若获取失败，则返回 None
         """
         if query is None:
             query = {
@@ -942,6 +959,7 @@ class DanbooruTags(DanbooruComponent):
             logger.warning(
                 f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
             )
+
         url = "/tags.json"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -952,10 +970,10 @@ class DanbooruTags(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
-        # 结果列表
-        result: list[dict] = []
+
         # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
         self.client.MAX_PAGE
+
         # 获取当前搜索参数下所有页码的图集列表
         if all_page:
             max_page = await self.index_page(  # 根据最大 tags id 估算最大页码，实际的最大页码会小于等于该页码（因为弃用的 tags 会被删除）
@@ -973,14 +991,16 @@ class DanbooruTags(DanbooruComponent):
                     f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=1,
                 end_page=max_page,
                 page_key="page",
-            )
+            ):
+                yield res
+
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
             if start_page > self.client.MAX_PAGE:
@@ -996,15 +1016,15 @@ class DanbooruTags(DanbooruComponent):
                     f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
                 page_key="page",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res
 
     def show(self):
         # TODO
@@ -1026,6 +1046,7 @@ class DanbooruTags(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
+        overwrite: bool = False,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
@@ -1036,24 +1057,33 @@ class DanbooruTags(DanbooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的 tags 列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
         """
         # 获取当前查询标签下所有页码的帖子列表中的帖子
-        tags = await self.index(
-            limit=limit,
-            query=query,
-            start_page=start_page,
-            end_page=end_page,
-            all_page=all_page,
-        )
+        async for i, tags in aenumerate(
+            self.index(
+                limit=limit,
+                query=query,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
+            )
+        ):
+            tags = pd.DataFrame(tags)
 
-        if tags.empty:
-            logger.info(f"All of the tags are empty.")
-            return
+            if tags.empty:
+                logger.info(f"All of the tags {i + 1} are empty.")
+                continue
 
-        # 下载帖子
-        tags_directory = os.path.join(self.directory, "tags")  # 标签文件目录
-
-        await self.client.concurrent_save_raws([tags], tags_directory, pd.Series(["tags.json"]))
+            # 下载帖子
+            tags_directory = os.path.join(self.directory, "tags")  # 标签文件目录
+            tags_filename = f"{tags.at[i, 'id']}.json"  # 标签文件名
+            await self.client.save_raws(
+                tags,
+                directory=tags_directory,
+                filename=tags_filename,
+                overwrite=overwrite,
+            )
 
 
 class DanbooruArtists(DanbooruComponent):
@@ -1307,6 +1337,7 @@ class DanbooruPools(DanbooruComponent):
         """
         if query is None:
             query = {}
+
         url = "/pools"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -1317,9 +1348,9 @@ class DanbooruPools(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
+
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
@@ -1340,7 +1371,7 @@ class DanbooruPools(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-    ) -> pd.DataFrame:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         Index
 
@@ -1432,8 +1463,8 @@ class DanbooruPools(DanbooruComponent):
             }
             ```
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            AsyncIterable[list[dict] | None]: 若获取成功，则返回对应的图集内容列表；若获取失败，则返回 None
         """
         if query is None:
             query = {}
@@ -1442,6 +1473,7 @@ class DanbooruPools(DanbooruComponent):
             logger.warning(
                 f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
             )
+
         url = "/pools.json"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -1452,10 +1484,10 @@ class DanbooruPools(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
-        # 结果列表
-        result: list[dict] = []
+
         # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
         self.client.MAX_PAGE
+
         # 获取当前搜索参数下所有页码的图集列表
         if all_page:
             max_page = await self.index_page(  # 获取 html 分页器中的最大页码
@@ -1473,14 +1505,16 @@ class DanbooruPools(DanbooruComponent):
                     f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=1,
                 end_page=max_page,
                 page_key="page",
-            )
+            ):
+                yield res
+
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
             if start_page > self.client.MAX_PAGE:
@@ -1496,20 +1530,20 @@ class DanbooruPools(DanbooruComponent):
                     f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
                 page_key="page",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res
 
     async def show(
         self,
         id: int,
-    ) -> pd.DataFrame:
+    ) -> list[dict] | None:
         """
         Show
 
@@ -1543,13 +1577,14 @@ class DanbooruPools(DanbooruComponent):
             该方法与指定 search[id]/search[name] 参数的 index 方法类似，**但是**返回的结果列表仅包含一个图集
 
         Returns:
-            pd.DataFrame: 请求结果列表
+            list[dict] | None: 若获取成功，则返回对应的图集内容列表；若获取失败，则返回 None
         """
         url = f"/pools/{id}.json"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {}
+
         # 结果列表
         result: list[
             dict
@@ -1558,7 +1593,7 @@ class DanbooruPools(DanbooruComponent):
             headers=headers,
             params=params,
         )
-        return pd.DataFrame(result)
+        return result
 
     def create(self):
         # TODO
@@ -1589,6 +1624,7 @@ class DanbooruPools(DanbooruComponent):
         all_page: bool = False,
         save_raws: bool = False,
         save_tags: bool = False,
+        overwrite: bool = False,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定搜索参数的图集列表中的帖子；若 all_page 为 True，则下载当前搜索参数下所有页码的图集列表中的帖子
@@ -1601,104 +1637,115 @@ class DanbooruPools(DanbooruComponent):
             all_page (bool, optional): 是否下载当前搜索参数下所有页码的图集列表中的帖子，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
         """
         if query is None:
             query = {}
+
         # 获取当前搜索参数下所有页码的图集列表
-        pools = await self.index(
-            limit=limit,
-            query=query,
-            start_page=start_page,
-            end_page=end_page,
-            all_page=all_page,
-        )
-
-        # 过滤空图集
-        empty_mask = pools["post_count"] == 0  # danbooru 中可能存在空图集
-        if not empty_mask.empty:
-            empty_pools = pools[empty_mask]
-            logger.info(
-                f"Found {len(empty_pools)} empty pools, which will be ignored. Empty pools: {empty_pools['name'].to_list()}"
+        async for i, pools in aenumerate(
+            self.index(
+                limit=limit,
+                query=query,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
             )
-            pools = pools[~empty_mask]
+        ):
+            pools = pd.DataFrame(pools)
 
-        if pools.empty:
-            logger.info(f"All of the pools are empty.")
-            return
+            # 过滤空图集
+            empty_mask = pools["post_count"] == 0  # danbooru 中可能存在空图集
+            if not empty_mask.empty:
+                empty_pools = pools[empty_mask]
+                logger.info(
+                    f"Found {len(empty_pools)} empty pools, which will be ignored. Empty pools: {empty_pools['name'].to_list()}"
+                )
+                pools = pools[~empty_mask]
 
-        # 图集中的帖子 id 列表
-        post_ids = pools["post_ids"]
-        # 图集名称
-        names = pools["name"]
-
-        # 遍历图集列表
-        for ids, name in zip(post_ids, names):
-            # 异步任务列表
-            tasks = [
-                self.client.posts.show(id=id) for id in ids
-            ]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
-            # 并发获取图集 ID 下所有帖子
-            task_result: list[pd.DataFrame] = await asyncio.gather(
-                *tasks, return_exceptions=True
-            )
-            # 合并所有帖子
-            posts = pd.concat(task_result, axis=0, join="outer", ignore_index=True)
-
-            # 下载帖子
-            urls = posts["file_url"]  # 帖子 URLs
-            posts_directory = os.path.join(self.directory, f"{name}")  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
-            result: list[tuple[str, str]] = await self.client.concurrent_download_file(
-                urls,
-                images_directory,
-            )
-
-            if not result:
-                logger.info(f"Downloaded 0 successful, 0 failed for pool: {name}")
+            if pools.empty:
+                logger.info(f"All of the pools {i + 1} are empty.")
                 continue
 
-            # 获取下载成功的帖子 url 以及文件路径
-            successful_urls = pd.Series([res[0] for res in result if res is not None])
-            successful_filepaths = pd.Series(
-                [res[1] for res in result if res is not None]
-            )
-            logger.info(
-                f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for pool: {name}"
-            )
+            # 图集中的帖子 id 列表
+            post_ids = pools["post_ids"]
+            # 图集名称
+            names = pools["name"]
 
-            # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
-            successful_url_indices = urls[urls.isin(successful_urls)].index
-
-            # 保存帖子 api 响应的元数据（json 格式）
-            if save_raws:
-                # 保存元数据
-                raws = [
-                    posts.loc[[index]] for index in successful_url_indices
-                ]  # 筛选后的元数据
-                raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
-                raws_filenames = successful_filepaths.apply(
-                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
-                )  # 元数据文件名
-                await self.client.concurrent_save_raws(
-                    raws,
-                    raws_directory,
-                    filenames=raws_filenames,
+            # 遍历图集列表
+            for ids, name in zip(post_ids, names):
+                # 异步任务列表
+                tasks = [
+                    self.client.posts.show(id=id) for id in ids
+                ]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
+                # 并发获取图集 ID 下所有帖子
+                task_result: list[list[dict] | None] = await asyncio.gather(
+                    *tasks, return_exceptions=True
+                )
+                # 合并所有帖子
+                posts = pd.DataFrame(
+                    [post for task in task_result for post in task if task is not None]
                 )
 
-            # 保存标签
-            if save_tags:
-                # 帖子标签
-                tags = posts["tag_string"]
-                # 保存标签
-                tags = tags[successful_url_indices]  # 筛选后的 tags
-                tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
-                tags_filenames = successful_filepaths.apply(
-                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
-                )  # 标签文件名
-                await self.client.concurrent_save_tags(
-                    tags,
-                    tags_directory,
-                    filenames=tags_filenames,
+                # 下载帖子
+                urls = posts["file_url"]  # 帖子 URLs
+                posts_directory = os.path.join(
+                    self.directory, f"{name}"
+                )  # 帖子文件目录
+                images_directory = os.path.join(
+                    posts_directory, "images"
+                )  # 图像文件目录
+
+                success_count, failure_count = 0, 0
+                async for index, res in aenumerate(
+                    self.client.concurrent_download_file(
+                        urls,
+                        images_directory,
+                    )
+                ):
+                    if res is None:
+                        failure_count += 1
+                        continue
+                    else:
+                        success_count += 1
+                    url, filepath = res
+
+                    # 保存帖子 api 响应的元数据（json 格式）
+                    if save_raws:
+                        # 保存元数据
+                        raws = posts.loc[[index]]  # 筛选后的元数据
+                        raws_directory = os.path.join(
+                            posts_directory, "raws"
+                        )  # 元数据文件目录
+                        raws_filename = (
+                            os.path.splitext(os.path.basename(filepath))[0] + ".json"
+                        )  # 元数据文件名
+                        await self.client.save_raws(
+                            raws,
+                            directory=raws_directory,
+                            filename=raws_filename,
+                            overwrite=overwrite,
+                        )
+
+                    # 保存标签
+                    if save_tags:
+                        # 帖子标签
+                        tags = posts.at[index, "tag_string"]  # 筛选后的 tags
+                        tags_directory = os.path.join(
+                            posts_directory, "tags"
+                        )  # 标签文件目录
+                        tags_filename = (
+                            os.path.splitext(os.path.basename(filepath))[0] + ".txt"
+                        )  # 标签文件名
+                        await self.client.save_tags(
+                            tags,
+                            directory=tags_directory,
+                            filename=tags_filename,
+                            overwrite=overwrite,
+                        )
+
+                logger.info(
+                    f"Downloaded {success_count} successful, {failure_count} failed for pool: {name}"
                 )
 
 
@@ -1748,6 +1795,7 @@ class DanbooruPostVersions(DanbooruComponent):
         """
         if query is None:
             query = {}
+
         url = "/post_versions"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -1758,6 +1806,7 @@ class DanbooruPostVersions(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
+
         #!当前 post_versions 页码，无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
         try:
             return self.client.MAX_PAGE  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
@@ -1766,7 +1815,6 @@ class DanbooruPostVersions(DanbooruComponent):
             current_page = 1
             #!first request, check pagination is exist or not
             response = await self.client.get(url, headers=headers, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为当前页向后 +4 页或最后一页
@@ -1782,7 +1830,6 @@ class DanbooruPostVersions(DanbooruComponent):
             while gap_page < 1000:
                 current_page = gap_page
                 response = await self.client.get(url, headers=headers, params=params)
-                response.raise_for_status()
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
@@ -1800,7 +1847,6 @@ class DanbooruPostVersions(DanbooruComponent):
             ):  # (1 + 4 * 249) = 997, range in [997, 1000]
                 params["page"] = i
                 response = await self.client.get(url, headers=headers, params=params)
-                response.raise_for_status()
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
@@ -1820,7 +1866,7 @@ class DanbooruPostVersions(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-    ) -> pd.DataFrame:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         Index
 
@@ -1926,8 +1972,8 @@ class DanbooruPostVersions(DanbooruComponent):
             }
             ```
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            AsyncIterable[list[dict] | None]: 若获取成功，则返回对应的帖子版本内容列表；若获取失败，则返回 None
         """
         if query is None:
             query = {}
@@ -1936,6 +1982,7 @@ class DanbooruPostVersions(DanbooruComponent):
             logger.warning(
                 f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
             )
+
         url = "/post_versions.json"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -1946,10 +1993,10 @@ class DanbooruPostVersions(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
-        # 结果列表
-        result: list[dict] = []
+
         # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
         self.client.MAX_PAGE
+
         # 获取当前搜索参数下所有页码的帖子版本列表
         if all_page:
             max_page = await self.index_page(  # 获取 html 分页器中的最大页码
@@ -1967,14 +2014,16 @@ class DanbooruPostVersions(DanbooruComponent):
                     f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=1,
                 end_page=max_page,
                 page_key="page",
-            )
+            ):
+                yield res
+
         # 获取在起始页码与结束页码范围内，指定标题的帖子版本列表
         else:
             if start_page > self.client.MAX_PAGE:
@@ -1990,15 +2039,15 @@ class DanbooruPostVersions(DanbooruComponent):
                     f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
                 page_key="page",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res
 
 
 class DanbooruPoolVersions(DanbooruComponent):
@@ -2047,6 +2096,7 @@ class DanbooruPoolVersions(DanbooruComponent):
         """
         if query is None:
             query = {}
+
         url = "/pool_versions"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -2057,6 +2107,7 @@ class DanbooruPoolVersions(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
+
         #!当前 pool_versions 页码，无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
         try:
             return self.client.MAX_PAGE  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
@@ -2065,7 +2116,6 @@ class DanbooruPoolVersions(DanbooruComponent):
             current_page = 1
             #!first request, check pagination is exist or not
             response = await self.client.get(url, headers=headers, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大页码
             tree = etree.HTML(response.text)
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为当前页向后 +4 页或最后一页
@@ -2081,7 +2131,6 @@ class DanbooruPoolVersions(DanbooruComponent):
             while gap_page < 1000:
                 current_page = gap_page
                 response = await self.client.get(url, headers=headers, params=params)
-                response.raise_for_status()
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
@@ -2099,7 +2148,6 @@ class DanbooruPoolVersions(DanbooruComponent):
             ):  # (1 + 4 * 249) = 997, range in [997, 1000]
                 params["page"] = i
                 response = await self.client.get(url, headers=headers, params=params)
-                response.raise_for_status()
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
@@ -2119,7 +2167,7 @@ class DanbooruPoolVersions(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-    ) -> pd.DataFrame:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         Index
 
@@ -2238,8 +2286,8 @@ class DanbooruPoolVersions(DanbooruComponent):
             }
             ```
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            AsyncIterable[list[dict] | None]: 若获取成功，则返回对应的图集版本内容列表；若获取失败，则返回 None
         """
         if query is None:
             query = {}
@@ -2248,6 +2296,7 @@ class DanbooruPoolVersions(DanbooruComponent):
             logger.warning(
                 f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
             )
+
         url = "/pool_versions.json"
         headers = {
             "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
@@ -2258,10 +2307,10 @@ class DanbooruPoolVersions(DanbooruComponent):
         }
         # 更新搜索参数
         params.update(query)
-        # 结果列表
-        result: list[dict] = []
+
         # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
         self.client.MAX_PAGE
+
         # 获取当前搜索参数下所有页码的图集版本列表
         if all_page:
             max_page = await self.index_page(  # 获取 html 分页器中的最大页码
@@ -2279,14 +2328,16 @@ class DanbooruPoolVersions(DanbooruComponent):
                     f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=1,
                 end_page=max_page,
                 page_key="page",
-            )
+            ):
+                yield res
+
         # 获取在起始页码与结束页码范围内，指定标题的图集版本列表
         else:
             if start_page > self.client.MAX_PAGE:
@@ -2302,12 +2353,12 @@ class DanbooruPoolVersions(DanbooruComponent):
                     f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 headers=headers,
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
                 page_key="page",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res

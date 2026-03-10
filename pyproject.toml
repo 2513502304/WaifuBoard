@@ -40,6 +40,7 @@ keywords = [
 requires-python = ">=3.9"
 dependencies = [
     "aiofiles>=24.1.0",
+    "asyncstdlib>=3.13.3",
     "fake-useragent>=1.2.1",
     "httpx[http2]>=0.28.1",
     "orjson>=3.11.5",

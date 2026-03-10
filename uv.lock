@@ -33,6 +33,15 @@ wheels = [
 ]
 
 [[package]]
+name = "asyncstdlib"
+version = "3.13.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/87/11ce6ea0917205df34e9c05d85ff05b7405d3c9639b67118ed5d9daadbc3/asyncstdlib-3.13.3.tar.gz", hash = "sha256:17d2af4c43365cf684e0c640d9e6eaf893d08092f873d5c4ea54219eb5826348", size = 50854, upload-time = "2026-03-10T08:12:32.569Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/d8/55d924a6391a8bfca251f59c06431888c3c8ef43a97af6112001506173a4/asyncstdlib-3.13.3-py3-none-any.whl", hash = "sha256:5aac5438e0c6a60e279667ba545ea011f4dca061e9e7517957488c4dfa8bcf0d", size = 44229, upload-time = "2026-03-10T08:12:31.306Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2025.10.5"
 source = { registry = "https://pypi.org/simple" }
@@ -855,6 +864,7 @@ name = "waifuboard"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
+    { name = "asyncstdlib" },
     { name = "fake-useragent" },
     { name = "httpx", extra = ["http2"] },
     { name = "orjson" },
@@ -867,6 +877,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aiofiles", specifier = ">=24.1.0" },
+    { name = "asyncstdlib", specifier = ">=3.13.3" },
     { name = "fake-useragent", specifier = ">=1.2.1" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28.1" },
     { name = "orjson", specifier = ">=3.11.5" },

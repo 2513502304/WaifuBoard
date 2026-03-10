@@ -5,9 +5,11 @@ Safebooru Image Board API implementation.
 import asyncio
 import os
 import re
+from typing import AsyncIterable
 
 import httpx
 import pandas as pd
+from asyncstdlib import enumerate as aenumerate
 from httpx._types import AuthTypes
 from lxml import etree
 
@@ -115,9 +117,9 @@ class SafebooruPosts(SafebooruComponent):
             "pid": 0,  # 查询帖子开始序号，且与 limit 参数相乘不超过 200000，pid 默认从 0 开始
             "tags": tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。更多信息请参阅 cheatsheet。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换。若设置该参数，则忽略 id 参数，仅获得指定 tags 的帖子
         }
+
         try:
             response = await self.client.get(url, params=params)
-            response.raise_for_status()
             # 解析 html 分页器中的最大 pid
             tree = etree.HTML(response.text)
             # 当前页为 b 标签，只有一页时，仅存在 b 标签；超过一页时，余下的页为 a 标签，且最后一页的 a 标签中含有 alt="last page" 属性
@@ -141,7 +143,7 @@ class SafebooruPosts(SafebooruComponent):
         tags: str = "",
         cid: int | None = None,
         id: int | None = None,
-    ) -> pd.DataFrame:
+    ) -> AsyncIterable[list[dict] | None]:
         """
         List
 
@@ -205,14 +207,15 @@ class SafebooruPosts(SafebooruComponent):
             cid (int | None, optional): 帖子的变更 id。这是 Unix 时间，所以如果在同一时间更新，可能会有其他帖子具有相同的值. Defaults to None. 表示不根据 cid 去重
             id (int | None, optional): 帖子 id。若设置该参数，则忽略 limit, pid 参数，仅获得指定 id 的某一个帖子。若超出 safebooru 的最大帖子 id，则自动截断至最大帖子 id。若设置 tags 参数，则忽略该参数. Defaults to None. 表示不查询单独 id
 
-        Returns:
-            pd.DataFrame: 请求结果列表
+        Yields:
+            list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
         """
         if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 1000
             logger.warning(
                 f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
             )
+
         url = "index.php"  # 与 safebooru 文档中的 api 接口描述不同，这里剔除了 api 的请求参数，并将其放入 params 中（httpx issue #3621, params 中的参数会完全覆盖 url 中的请求参数，而不是合理地拼接到 url 中）
         params = {
             "page": "dapi",  # 固定 api 参数
@@ -225,21 +228,19 @@ class SafebooruPosts(SafebooruComponent):
             "id": id,  # 帖子 id。若设置该参数，则忽略 limit, pid 参数，仅获得指定 id 的某一个帖子。若超出 safebooru 的最大帖子 id，则自动截断至最大帖子 id。若设置 tags 参数，则忽略该参数
             "json": 1,  # 设置为 1 以获取 JSON 格式的响应
         }
-        # 结果列表
-        result: list[dict] = []
+
         # 若设置 id 参数，则忽略 limit, pid 参数，仅获得指定 id 的某一个帖子
         if id is not None:
             params["tags"] = (
                 ""  # 忽略 tags 参数，防止因为 tags 参数存在而导致无法查询指定 id 的帖子
             )
-            result = await self.client.concurrent_fetch_page(  # safebooru 在搜索 id 时，返回的结果列表仅包含一个帖子
+            result = await self.client.fetch_page(  # safebooru 在搜索 id 时，返回的结果列表仅包含一个帖子
                 url,
                 params=params,
-                start_page=0,
-                end_page=0,
-                page_key="pid",
             )
-            return pd.DataFrame(result)
+            yield result
+            return
+
         #!优先于除 id 以外的所有请求参数
         #!由于 Safebooru 平台存在限流，最多检索 200000 篇帖子（无论是否登录）
         # 获取当前查询标签下所有页码的帖子列表
@@ -273,29 +274,29 @@ class SafebooruPosts(SafebooruComponent):
                 #!超过 MAX_PID 限制时，不能获取忽略的帖子，因为再次使用 limit 参数请求下一页时会导致 pid 超过 200000
                 ignored_posts: bool = False
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
                 start_page=0,
                 end_page=max_page - 1,
                 page_key="pid",
-            )
+            ):
+                yield res
 
             # 获取忽略后的帖子
             if ignored_posts:
                 logger.info(
                     f"Find ignored page number {max_page + 1} for {limit = }, {tags = }, try to fetch them"
                 )
-                ignored_result = await self.client.concurrent_fetch_page(
+                async for res in self.client.concurrent_fetch_page(
                     url,
                     params=params,
                     start_page=max_page,
                     end_page=max_page,
                     page_key="pid",
-                )
-                if ignored_result:
-                    # 将忽略的帖子添加到结果列表中
-                    result.extend(ignored_result)
+                ):
+                    yield res
+
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
             #!没超过 MAX_PID 限制时，由于 page 的范围是确定的，不需要通过 pid 等参数间接计算（主要是整除计算带来的余数舍去），所以直接获取即可
@@ -315,14 +316,14 @@ class SafebooruPosts(SafebooruComponent):
                     f"End page is set to {end_page} for {limit = }, {tags = }, because {end_pid} exceeds {self.client.MAX_PID}"
                 )
 
-            result = await self.client.concurrent_fetch_page(
+            async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
                 start_page=start_page - 1,
                 end_page=end_page - 1,
                 page_key="pid",
-            )
-        return pd.DataFrame(result)
+            ):
+                yield res
 
     def deleted_image(self):
         # TODO
@@ -339,6 +340,7 @@ class SafebooruPosts(SafebooruComponent):
         id: int | None = None,
         save_raws: bool = False,
         save_tags: bool = False,
+        overwrite: bool = False,
     ) -> None:
         """
         下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
@@ -353,84 +355,92 @@ class SafebooruPosts(SafebooruComponent):
             id (int | None, optional): 帖子 id。若设置该参数，则忽略 limit, pid 参数，仅获得指定 id 的某一个帖子。若超出 safebooru 的最大帖子 id，则自动截断至最大帖子 id。若设置 tags 参数，则忽略该参数. Defaults to None. 表示不查询单独 id
             save_raws (bool, optional): 是否保存帖子 api 响应的元数据（json 格式）. Defaults to False.
             save_tags (bool, optional): 是否保存帖子标签. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
         """
         # 获取当前查询标签下所有页码的帖子列表中的帖子
-        posts = await self.list(
-            limit=limit,
-            start_page=start_page,
-            end_page=end_page,
-            all_page=all_page,
-            tags=tags,
-            cid=cid,
-            id=id,
-        )
+        async for i, posts in aenumerate(
+            self.list(
+                limit=limit,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
+                tags=tags,
+                cid=cid,
+                id=id,
+            )
+        ):
+            posts = pd.DataFrame(posts)
 
-        if posts.empty:
-            logger.info(f"All of the posts are empty.")
-            return
+            if posts.empty:
+                logger.info(f"All of the posts {i + 1} are empty.")
+                continue
 
-        # 下载帖子
-        urls = posts["file_url"]  # 帖子 URLs
-        if id is not None:  # 存储文件目录
-            posts_directory = os.path.join(self.directory, f"{id}")  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
-        else:
-            posts_directory = os.path.join(
-                self.directory, f"{tags if tags != '' else 'all'}"
-            )  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
-        result: list[tuple[str, str]] = await self.client.concurrent_download_file(
-            urls,
-            images_directory,
-        )
+            # 下载帖子
+            urls = posts["file_url"]  # 帖子 URLs
+            if id is not None:  # 存储文件目录
+                posts_directory = os.path.join(self.directory, f"{id}")  # 帖子文件目录
+                images_directory = os.path.join(
+                    posts_directory, "images"
+                )  # 图像文件目录
+            else:
+                posts_directory = os.path.join(
+                    self.directory, f"{tags if tags != '' else 'all'}"
+                )  # 帖子文件目录
+                images_directory = os.path.join(
+                    posts_directory, "images"
+                )  # 图像文件目录
 
-        if not result:
+            success_count, failure_count = 0, 0
+            async for index, res in aenumerate(
+                self.client.concurrent_download_file(
+                    urls,
+                    images_directory,
+                )
+            ):
+                if res is None:
+                    failure_count += 1
+                    continue
+                else:
+                    success_count += 1
+
+                url, filepath = res
+
+                # 保存帖子 api 响应的元数据（json 格式）
+                if save_raws:
+                    # 保存元数据
+                    raws = posts.loc[[index]]  # 筛选后的元数据
+                    raws_directory = os.path.join(
+                        posts_directory, "raws"
+                    )  # 元数据文件目录
+                    raws_filename = (
+                        os.path.splitext(os.path.basename(filepath))[0] + ".json"
+                    )  # 元数据文件名
+                    await self.client.save_raws(
+                        raws,
+                        directory=raws_directory,
+                        filename=raws_filename,
+                        overwrite=overwrite,
+                    )
+
+                # 保存标签
+                if save_tags:
+                    # 帖子标签
+                    tags = posts.at[index, "tags"]  # 筛选后的 tags
+                    tags_directory = os.path.join(
+                        posts_directory, "tags"
+                    )  # 标签文件目录
+                    tags_filename = (
+                        os.path.splitext(os.path.basename(filepath))[0] + ".txt"
+                    )  # 标签文件名
+                    await self.client.save_tags(
+                        tags,
+                        directory=tags_directory,
+                        filename=tags_filename,
+                        overwrite=overwrite,
+                    )
+
             logger.info(
-                f"Downloaded 0 successful, 0 failed for posts: {posts['id'].tolist()}"
-            )
-            return
-
-        # 获取下载成功的帖子 url 以及文件路径
-        successful_urls = pd.Series([res[0] for res in result if res is not None])
-        successful_filepaths = pd.Series([res[1] for res in result if res is not None])
-        logger.info(
-            f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for posts: {posts['id'].tolist()}"
-        )
-
-        # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
-        successful_url_indices = urls[urls.isin(successful_urls)].index
-
-        # 保存帖子 api 响应的元数据（json 格式）
-        if save_raws:
-            # 保存元数据
-            raws = [
-                posts.loc[[index]] for index in successful_url_indices
-            ]  # 筛选后的元数据
-            raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
-            raws_filenames = successful_filepaths.apply(
-                lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
-            )  # 元数据文件名
-            await self.client.concurrent_save_raws(
-                raws,
-                raws_directory,
-                filenames=raws_filenames,
-            )
-
-        # 保存标签
-        if save_tags:
-            # 帖子标签
-            tags = posts["tags"]
-            # 保存标签
-            tags = tags[successful_url_indices]  # 筛选后的 tags
-            tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
-            tags_filenames = successful_filepaths.apply(
-                lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
-            )  # 标签文件名
-            # 保存标签
-            await self.client.concurrent_save_tags(
-                tags,
-                tags_directory,
-                filenames=tags_filenames,
+                f"Downloaded {success_count} successful, {failure_count} failed for posts: {posts['id'].tolist()}"
             )
 
 
