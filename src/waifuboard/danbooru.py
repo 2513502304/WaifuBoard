@@ -15,30 +15,25 @@ from .utils import logger
 
 __all__ = [
     # base classes
-    'Danbooru',
-    'DanbooruComponent',
-
+    "Danbooru",
+    "DanbooruComponent",
     # client classes
-    'DanbooruClient',
-
+    "DanbooruClient",
     # component classes
-
     # Versioned Types
-    'DanbooruArtists',
-    'DanbooruNotes',
-    'DanbooruPools',
-    'DanbooruPosts',
-    'DanbooruWikiPages',
-
+    "DanbooruArtists",
+    "DanbooruNotes",
+    "DanbooruPools",
+    "DanbooruPosts",
+    "DanbooruWikiPages",
     # Type Versions
-    'DanbooruPostVersions',
-    'DanbooruPoolVersions'
-
+    "DanbooruPostVersions",
+    "DanbooruPoolVersions"
     # Non-versioned Types
-    'DanbooruComments',
-    'DanbooruForumPosts',
-    'DanbooruTags',
-    'DanbooruUsers',
+    "DanbooruComments",
+    "DanbooruForumPosts",
+    "DanbooruTags",
+    "DanbooruUsers",
 ]
 
 
@@ -62,20 +57,20 @@ class DanbooruComponent(BooruComponent):
 
 class DanbooruClient(Danbooru):
     """
-    Danbooru API reference document: https://danbooru.donmai.us/wiki_pages/help%3Aapi  
-      
-        - Danbooru Common Search Parameters used for search endpoint: 
+    Danbooru API reference document: https://danbooru.donmai.us/wiki_pages/help%3Aapi
+
+        - Danbooru Common Search Parameters used for search endpoint:
             - page - Returns the given page. Subject to maximum page limits (see help:users)
             - limit - The number of results to return per page. The maximum limit is 200 for /posts.json and 1000 for everything else.
             - search[id]
             - search[created_at]
             - search[updated_at]
             - search[order]=custom Returns results in the same order as given by search[id]=3,2,1.
-            
-    Danbooru Common URL Parameters used for navigation around the site: https://danbooru.donmai.us/wiki_pages/help%3Acommon_url_parameters  
-    
-    Note: 
-        Danbooru 性能和安全由 Cloudflare 提供，访问该网站时，若使用常见的 User-Agent 或将 User-Agent 设置为 ''，会被拦截跳转到验证是否真人的页面，但随便给一个 User-Agent 即可避免上述情况  
+
+    Danbooru Common URL Parameters used for navigation around the site: https://danbooru.donmai.us/wiki_pages/help%3Acommon_url_parameters
+
+    Note:
+        Danbooru 性能和安全由 Cloudflare 提供，访问该网站时，若使用常见的 User-Agent 或将 User-Agent 设置为 ''，会被拦截跳转到验证是否真人的页面，但随便给一个 User-Agent 即可避免上述情况
         wft? 你把 python-requests/2.32.4 和 python-httpx/0.28.0 这种 UA 都通过了不让我正常的 UA 通过？还有，为什么不禁全呢，换成 python-httpx/0.28.1 版本就又不通过了？
     """
 
@@ -83,11 +78,11 @@ class DanbooruClient(Danbooru):
         super().__init__(**kwargs)
 
         # 设置发送相对 URL 请求时使用的基础 URL
-        self.base_url = 'https://danbooru.donmai.us/'
+        self.base_url = "https://danbooru.donmai.us/"
 
         # 初始化各组件
         self.posts = DanbooruPosts(self)
-        # self.tags = DanbooruTags(self)
+        self.tags = DanbooruTags(self)
         # self.artists = DanbooruArtists(self)
         # self.comments = DanbooruComments(self)
         # self.wiki_pages = DanbooruWikiPages(self)
@@ -118,17 +113,17 @@ class DanbooruPosts(DanbooruComponent):
     async def index_page(
         self,
         limit: int = 20,
-        tags: str = '',
+        tags: str = "",
         random: bool = False,
     ) -> int:
         """
         使用定位 html 分页器的方式，获取指定标签帖子列表的最大页码
-        
-        Note: 
-            danbooru post 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/posts?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/posts.json?limit=1000&page=1001 网页中会返回：  
+
+        Note:
+            danbooru post 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/posts?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/posts.json?limit=1000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -145,7 +140,7 @@ class DanbooruPosts(DanbooruComponent):
                 ]
             }
             ```
-            
+
         Args:
             limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
             tags (str, optional): 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换. Defaults to ''. 表示搜索全站
@@ -157,15 +152,15 @@ class DanbooruPosts(DanbooruComponent):
         # 随机抽样，仅返回 1 页内容
         if random:
             return 1
-        url = '/posts'
+        url = "/posts"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
-            'tags': tags,  # 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
-            'random': random,  # 在帖子查询下选择随机抽样
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+            "tags": tags,  # 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
+            "random": random,  # 在帖子查询下选择随机抽样
         }
         try:
             response = await self.client.get(url, headers=headers, params=params)
@@ -175,7 +170,7 @@ class DanbooruPosts(DanbooruComponent):
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
             pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
             if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2].xpath('./text()')[0])
+                return int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
         except httpx.HTTPError as exc:
@@ -187,26 +182,85 @@ class DanbooruPosts(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        tags: str = '',
+        tags: str = "",
         random: bool = False,
         md5: str | None = None,
     ) -> pd.DataFrame:
         """
         Index
-        
+
         HTTP Method	    GET
         Base URL	    /posts.json
         Type	        read request
         Description	    The default order is ID descending
-        
+
         Index parameters
-        
+
         - tags - The post query to search for using tags and metatags (Help:Cheatsheet).
             - post[tags] can also be used.
         - random - Selects a random sampling under the post query.
         - format - Chooses which format to return. Can be: html, json, xml, atom.
         - md5 - Search for an MD5 match. Takes priority over all other parameters.
-        
+
+        Search attributes
+
+        The following are the base fields along with their associated type. Check the syntax pages for all of the available variations.
+
+        Number syntax
+            - id
+            - created_at
+            - updated_at
+            - pixiv_id
+            - fav_count
+            - score
+            - up_score
+            - down_score
+            - file_size
+            - image_width
+            - image_height
+            - tag_count
+            - last_comment_bumped_at
+            - last_commented_at
+            - last_noted_at
+
+        Text syntax
+            - rating
+            - source
+            - md5
+            - file_ext
+
+        Boolean syntax
+            - has_children
+            - has_active_children
+            - is_pending
+            - is_flagged
+            - is_deleted
+            - is_banned
+
+        User syntax
+            - uploader
+            - approver
+
+        Post syntax
+            - parent (unavailable due to current limitations)
+            - children (unavailable due to current limitations)
+
+        Chaining syntax
+            - artist_commentary
+            - flags
+            - appeals
+            - notes
+            - comments
+            - approvals
+            - replacements
+            - media_metadata
+
+        Special search parameters
+
+        The following are additional search fields.
+
+            - tags - Behaves the same as the regular post search.
+
         Return json format:
         ```
         [
@@ -314,7 +368,7 @@ class DanbooruPosts(DanbooruComponent):
         ```
 
         获取在起始页码与结束页码范围内，指定标签的帖子列表；若 all_page 为 True，则获取当前查询标签下所有页码的帖子列表
-        
+
         Args:
             limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
             start_page (int, optional): 查询起始页码. Defaults to 1.
@@ -323,12 +377,12 @@ class DanbooruPosts(DanbooruComponent):
             tags (str, optional): 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换. Defaults to ''. 表示搜索全站
             random (bool, optional): 在帖子查询下选择随机抽样。若设置为 True，则仅返回 1 页内容. Defaults to False.
             md5 (str, optional): 搜索 MD5 匹配项。优先于所有其他参数. Defaults to ''.
-            
-        Note: 
-            danbooru post 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/posts?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/posts.json?limit=1000&page=1001 网页中会返回：  
+
+        Note:
+            danbooru post 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/posts?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/posts.json?limit=1000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -351,17 +405,19 @@ class DanbooruPosts(DanbooruComponent):
         """
         if limit > 200:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 200
-            logger.warning(f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 200.")
-        url = '/posts.json'
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 200."
+            )
+        url = "/posts.json"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
-            'tags': tags,  # 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
-            'random': random,  # 在帖子查询下选择随机抽样
-            'md5': md5,  # 搜索 MD5 匹配项。优先于所有其他参数
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+            "tags": tags,  # 使用标签和元标签进行搜索的帖子查询 (Help:Cheatsheet)，post[tag] 也可以使用。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
+            "random": random,  # 在帖子查询下选择随机抽样
+            "md5": md5,  # 搜索 MD5 匹配项。优先于所有其他参数
         }
         # 结果列表
         result: list[dict] = []
@@ -372,7 +428,7 @@ class DanbooruPosts(DanbooruComponent):
                 params=params,
                 start_page=1,
                 end_page=1,
-                page_key='page',
+                page_key="page",
             )
             return pd.DataFrame(result)
         # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
@@ -384,13 +440,16 @@ class DanbooruPosts(DanbooruComponent):
                 tags=tags,
                 random=random,
             )
-            logger.info(f"Maximum page number is equal to {max_page} for {limit = }, {tags = }, {random = }")
+            logger.info(
+                f"Maximum page number is equal to {max_page} for {limit = }, {tags = }, {random = }"
+            )
 
             if max_page > self.client.MAX_PAGE:
                 remain_page = max_page - self.client.MAX_PAGE
                 max_page = self.client.MAX_PAGE  # 限制最大页码不超过每次搜索的最大页数
                 logger.warning(
-                    f"Maximum page number is set to {max_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                    f"Maximum page number is set to {max_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -398,7 +457,7 @@ class DanbooruPosts(DanbooruComponent):
                 params=params,
                 start_page=1,
                 end_page=max_page,
-                page_key='page',
+                page_key="page",
             )
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
@@ -406,11 +465,14 @@ class DanbooruPosts(DanbooruComponent):
                 remain_page = start_page - self.client.MAX_PAGE
                 start_page = self.client.MAX_PAGE
                 logger.warning(
-                    f"Start page is set to {start_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                    f"Start page is set to {start_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
             if end_page > self.client.MAX_PAGE:
                 remain_page = end_page - self.client.MAX_PAGE
                 end_page = self.client.MAX_PAGE
-                logger.warning(f"End page is set to {end_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"End page is set to {end_page} for {limit = }, {tags = }, {random = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -418,7 +480,7 @@ class DanbooruPosts(DanbooruComponent):
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
-                page_key='page',
+                page_key="page",
             )
         return pd.DataFrame(result)
 
@@ -428,12 +490,12 @@ class DanbooruPosts(DanbooruComponent):
     ) -> pd.DataFrame:
         """
         Show
-        
+
         HTTP Method	    GET
         Base URL	    /posts/$id.json
         Type	        read request
         Description	    $id is the post ID
-        
+
         Return json format:
         ```
         {
@@ -536,21 +598,21 @@ class DanbooruPosts(DanbooruComponent):
             "preview_file_url": "https://cdn.donmai.us/180x180/b3/c4/b3c448861c60fbe54e2aa13d9d56f7bd.jpg"
         }
         ```
-        
+
         获取指定 id 的帖子列表
-        
+
         Args:
             id (int): 帖子 id
-            
+
         Note:
             该方法与指定 md5 参数的 index 方法类似，**但是**返回的结果列表仅包含一个帖子
-            
+
         Returns:
             pd.DataFrame: 请求结果列表
         """
-        url = f'/posts/{id}.json'
+        url = f"/posts/{id}.json"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {}
         # 结果列表
@@ -561,15 +623,15 @@ class DanbooruPosts(DanbooruComponent):
         )
         return pd.DataFrame(result)
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert(self, ):
+    def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -579,7 +641,7 @@ class DanbooruPosts(DanbooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        tags: str = '',
+        tags: str = "",
         random: bool = False,
         md5: str | None = None,
         save_raws: bool = False,
@@ -615,26 +677,32 @@ class DanbooruPosts(DanbooruComponent):
             return
 
         # 下载帖子
-        urls = posts['file_url']  # 帖子 URLs
+        urls = posts["file_url"]  # 帖子 URLs
         if md5 is not None:  # 存储文件目录
-            posts_directory = os.path.join(self.directory, f'{md5}')  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, 'images')  # 图像文件目录
+            posts_directory = os.path.join(self.directory, f"{md5}")  # 帖子文件目录
+            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
         else:
-            posts_directory = os.path.join(self.directory, f'{tags if tags !="" else "all"}')  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, 'images')  # 图像文件目录
+            posts_directory = os.path.join(
+                self.directory, f"{tags if tags != '' else 'all'}"
+            )  # 帖子文件目录
+            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
         result: list[tuple[str, str]] = await self.client.concurrent_download_file(
             urls,
             images_directory,
         )
 
         if not result:
-            logger.info(f"Downloaded 0 successful, 0 failed for posts: {posts['id'].tolist()}")
+            logger.info(
+                f"Downloaded 0 successful, 0 failed for posts: {posts['id'].tolist()}"
+            )
             return
 
         # 获取下载成功的帖子 url 以及文件路径
         successful_urls = pd.Series([res[0] for res in result if res is not None])
         successful_filepaths = pd.Series([res[1] for res in result if res is not None])
-        logger.info(f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for posts: {posts['id'].tolist()}")
+        logger.info(
+            f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for posts: {posts['id'].tolist()}"
+        )
 
         # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
         successful_url_indices = urls[urls.isin(successful_urls)].index
@@ -642,9 +710,13 @@ class DanbooruPosts(DanbooruComponent):
         # 保存帖子 api 响应的元数据（json 格式）
         if save_raws:
             # 保存元数据
-            raws = [posts.loc[[index]] for index in successful_url_indices]  # 筛选后的元数据
-            raws_directory = os.path.join(posts_directory, 'raws')  # 元数据文件目录
-            raws_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.json')  # 元数据文件名
+            raws = [
+                posts.loc[[index]] for index in successful_url_indices
+            ]  # 筛选后的元数据
+            raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
+            raws_filenames = successful_filepaths.apply(
+                lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
+            )  # 元数据文件名
             await self.client.concurrent_save_raws(
                 raws,
                 raws_directory,
@@ -654,11 +726,13 @@ class DanbooruPosts(DanbooruComponent):
         # 保存标签
         if save_tags:
             # 帖子标签
-            tags = posts['tag_string']
+            tags = posts["tag_string"]
             # 保存标签
             tags = tags[successful_url_indices]  # 筛选后的 tags
-            tags_directory = os.path.join(posts_directory, 'tags')  # 标签文件目录
-            tags_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.txt')  # 标签文件名
+            tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
+            tags_filenames = successful_filepaths.apply(
+                lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
+            )  # 标签文件名
             await self.client.concurrent_save_tags(
                 tags,
                 tags_directory,
@@ -674,22 +748,312 @@ class DanbooruTags(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self, ):
+    async def index_page(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+    ) -> int:
+        """
+        使用定位 html 分页器的方式，获取指定搜索参数 tags 的最大页码
+
+        Note:
+            danbooru tags 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际 tags 数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/tags?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/tags.json?limit=1000&page=1001 网页中会返回：
+            ```
+            {
+                "success": false,
+                "error": "PaginationExtension::PaginationError",
+                "message": "You cannot go beyond page 1000.",
+                "backtrace": [
+                    "app/logical/pagination_extension.rb:54:in 'PaginationExtension#paginate'",
+                    "app/models/application_record.rb:18:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginate'",
+                    "app/models/application_record.rb:37:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginated_search'",
+                    "app/controllers/tags_controller.rb:10:in 'TagsController#index'",
+                    "app/logical/rack_server_timing.rb:19:in 'RackServerTiming#call'"
+                ]
+            }
+            ```
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+
+        Returns:
+            int: html 分页器中的最大页码，实际的最大页码等于该页码
+        """
+        if query is None:
+            query = {
+                "search[hide_empty]": False,
+                "search[order]": "date",
+            }
+        url = "/tags"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+        }
+        # 更新搜索参数
+        params.update(query)
+        try:
+            response = await self.client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            # 解析 html 分页器中的最大页码
+            tree = etree.HTML(response.text)
+            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
+            #!若访问 pools/gallery 页面，则无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
+            #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
+            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
+            if pagination:  # 存在分页器，说明该页面至少有两页
+                return int(pagination[-2].xpath("./text()")[0])
+            else:  # 不存在分页器，说明该页面只有一页
+                return 1
+        except httpx.HTTPError as exc:
+            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+
+    async def index(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+        start_page: int = 1,
+        end_page: int = 1,
+        all_page: bool = False,
+    ):
+        """
+        Index
+
+        HTTP Method	    GET
+        Base URL	    /tags.json
+        Type	        read request
+        Description	    The default order is ID descending.
+
+        Search attributes
+
+        The following are the base fields along with their associated type. Check the syntax pages for all of the available variations.
+
+        Number syntax
+            - id
+            - category
+            - post_count
+            - created_at
+            - updated_at
+
+        String syntax
+            - name
+
+        Boolean syntax
+            - is_deprecated
+
+        Chaining syntax
+            - wiki_page
+            - artist
+            - antecedent_alias
+            - consequent_aliases
+            - antecedent_implications
+            - consequent_implications
+            - consequent_implications
+            - dtext_links
+
+        Special search parameters
+
+        The following are additional search fields.
+
+        - fuzzy_name_matches - Shows tags with names that are within a certain percentage of similarity.
+        - name_matches - Normalized wildcard search on the name field.
+        - name_normalize - Normalized wildcard search on the name field that supports multiple tags split by a comma ",".
+        - name_or_alias_matches - Normalized wildcard search on the name field that also checks for aliases where the search term is the antecedent.
+        - hide_empty - Shows tags with a post count of 0 (true) or all tags (false) (Help:Boolean syntax). (default False) (M)
+        - is_empty - Shows tags with a post count of 0 (true) or a post count greater than 0 (false) (Help:Boolean syntax).
+
+        Search order
+
+        Using the search parameter order with one of the following values changes the order of the results.
+
+        - name - Name ascending.
+        - date - ID descending. (default order) (M)
+        - count - Post count descending.
+        - similarity - Orders by similarity to the search term, then by post count descending, then tag name ascending.
+            - Only when the fuzzy_name_matches parameter is used.
+        - custom - Help:Common URL parameters
+            - In order to use this order, search[id] must also be set with a list of comma-separated IDs.
+
+        Return json format:
+        ```
+        [
+            {
+                "id": 2572471,
+                "name": "qwqiii_p",
+                "post_count": 0,
+                "category": 1,
+                "created_at": "2026-03-10T05:32:38.423-04:00",
+                "updated_at": "2026-03-10T05:32:38.423-04:00",
+                "is_deprecated": false,
+                "words": [
+                    "qwqiii",
+                    "p"
+                ]
+            },
+            ...
+        ]
+        ```
+
+        获取在起始页码与结束页码范围内，指定搜索参数的 tags 列表；若 all_page 为 True，则获取当前搜索参数下所有页码的 tags 列表
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+            start_page (int, optional): 查询起始页码. Defaults to 1.
+            end_page (int, optional): 查询结束页码. Defaults to 1.
+            all_page (bool, optional): 是否获取当前搜索参数下所有页码的 tags 列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
+
+        Note:
+            danbooru tags 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际 tags 数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/tags?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/tags.json?limit=1000&page=1001 网页中会返回：
+            ```
+            {
+                "success": false,
+                "error": "PaginationExtension::PaginationError",
+                "message": "You cannot go beyond page 1000.",
+                "backtrace": [
+                    "app/logical/pagination_extension.rb:54:in 'PaginationExtension#paginate'",
+                    "app/models/application_record.rb:18:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginate'",
+                    "app/models/application_record.rb:37:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginated_search'",
+                    "app/controllers/tags_controller.rb:10:in 'TagsController#index'",
+                    "app/logical/rack_server_timing.rb:19:in 'RackServerTiming#call'"
+                ]
+            }
+            ```
+
+        Returns:
+            pd.DataFrame: 请求结果列表
+        """
+        if query is None:
+            query = {
+                "search[hide_empty]": False,
+                "search[order]": "date",
+            }
+        if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
+            limit = 1000
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
+            )
+        url = "/tags.json"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+        }
+        # 更新搜索参数
+        params.update(query)
+        # 结果列表
+        result: list[dict] = []
+        # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
+        self.client.MAX_PAGE
+        # 获取当前搜索参数下所有页码的图集列表
+        if all_page:
+            max_page = await self.index_page(  # 根据最大 tags id 估算最大页码，实际的最大页码会小于等于该页码（因为弃用的 tags 会被删除）
+                limit=limit,
+                query=query,
+            )
+            logger.info(
+                f"Maximum page number is equal to {max_page} for {limit = }, {query = }"
+            )
+
+            if max_page > self.client.MAX_PAGE:
+                remain_page = max_page - self.client.MAX_PAGE
+                max_page = self.client.MAX_PAGE  # 限制最大页码不超过每次搜索的最大页数
+                logger.warning(
+                    f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+
+            result = await self.client.concurrent_fetch_page(
+                url,
+                headers=headers,
+                params=params,
+                start_page=1,
+                end_page=max_page,
+                page_key="page",
+            )
+        # 获取在起始页码与结束页码范围内，指定标题的图集列表
+        else:
+            if start_page > self.client.MAX_PAGE:
+                remain_page = start_page - self.client.MAX_PAGE
+                start_page = self.client.MAX_PAGE
+                logger.warning(
+                    f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+            if end_page > self.client.MAX_PAGE:
+                remain_page = end_page - self.client.MAX_PAGE
+                end_page = self.client.MAX_PAGE
+                logger.warning(
+                    f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+
+            result = await self.client.concurrent_fetch_page(
+                url,
+                headers=headers,
+                params=params,
+                start_page=start_page,
+                end_page=end_page,
+                page_key="page",
+            )
+        return pd.DataFrame(result)
+
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
-        # TODO
-        raise NotImplementedError("The method is not implemented")
-
-    def related(self, ):
+    def related(self):
         # see Other Functions section: https://danbooru.donmai.us/wiki_pages/help%3Aapi
         # TODO
         raise NotImplementedError("The method is not implemented")
+
+    async def download(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+        start_page: int = 1,
+        end_page: int = 1,
+        all_page: bool = False,
+    ) -> None:
+        """
+        下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+            start_page (int, optional): 查询起始页码. Defaults to 1.
+            end_page (int, optional): 查询结束页码. Defaults to 1.
+            all_page (bool, optional): 是否获取当前搜索参数下所有页码的 tags 列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
+        """
+        # 获取当前查询标签下所有页码的帖子列表中的帖子
+        tags = await self.index(
+            limit=limit,
+            query=query,
+            start_page=start_page,
+            end_page=end_page,
+            all_page=all_page,
+        )
+
+        if tags.empty:
+            logger.info(f"All of the tags are empty.")
+            return
+
+        # 下载帖子
+        tags_directory = os.path.join(self.directory, "tags")  # 标签文件目录
+
+        await self.client.concurrent_save_raws([tags], tags_directory, pd.Series(["tags.json"]))
 
 
 class DanbooruArtists(DanbooruComponent):
@@ -700,39 +1064,39 @@ class DanbooruArtists(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self, ):
+    def index(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def delete(self, ):
+    def delete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def banned(self, ):
+    def banned(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert(self, ):
+    def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def ban(self, ):
+    def ban(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def unban(self, ):
+    def unban(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -745,27 +1109,27 @@ class DanbooruComments(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self, ):
+    def index(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def delete(self, ):
+    def delete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def undelete(self, ):
+    def undelete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -778,31 +1142,31 @@ class DanbooruWikiPages(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self, ):
+    def index(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def delete(self, ):
+    def delete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert(self, ):
+    def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -815,27 +1179,27 @@ class DanbooruNotes(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self, ):
+    def index(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def delete(self, ):
+    def delete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert(self, ):
+    def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -848,19 +1212,19 @@ class DanbooruUsers(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self, ):
+    def index(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -873,27 +1237,27 @@ class DanbooruForumPosts(DanbooruComments):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self, ):
+    def index(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def delete(self, ):
+    def delete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def undelete(self, ):
+    def undelete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -914,11 +1278,11 @@ class DanbooruPools(DanbooruComponent):
         """
         使用定位 html 分页器的方式，获取指定搜索参数图集的最大页码
 
-        Note: 
-            danbooru pool 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/pools?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/pools.json?limit=1000&page=1001 网页中会返回：  
+        Note:
+            danbooru pool 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/pools?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/pools.json?limit=1000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -932,6 +1296,8 @@ class DanbooruPools(DanbooruComponent):
                     "app/logical/rack_server_timing.rb:19:in 'RackServerTiming#call'"
                 ]
             }
+            ```
+
         Args:
             limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
             query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
@@ -941,13 +1307,13 @@ class DanbooruPools(DanbooruComponent):
         """
         if query is None:
             query = {}
-        url = '/pools'
+        url = "/pools"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
         }
         # 更新搜索参数
         params.update(query)
@@ -961,7 +1327,7 @@ class DanbooruPools(DanbooruComponent):
             #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
             pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
             if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2].xpath('./text()')[0])
+                return int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
         except httpx.HTTPError as exc:
@@ -977,38 +1343,38 @@ class DanbooruPools(DanbooruComponent):
     ) -> pd.DataFrame:
         """
         Index
-        
+
         HTTP Method	    GET
         Base URL	    /pools.json
         Type	        read request
         Description	    The default order is updated at descending.
-        
+
         Search attributes
-        
+
         All of the following are standard attributes with all of their available formats and qualifiers.
 
         - Number syntax
             - id
             - created_at
             - updated_at
-            
+
         - Text syntax
             - name
             - description
-            
+
         - Array syntax
             - post_ids
-        
+
         - Boolean syntax
             - is_deleted
-            
+
         Special search parameters
-        
+
         - name_matches - Normalized case-insensitive wildcard searching on the name text field.
         - description_matches - Case-insensitive wildcard searching on the description text field.
         - post_tags_match - The pools's post's tags match the given terms. Meta-tags not supported.
         - name_contains - same as name_matches. (A)
-        
+
         - category
             - series - Only series-type pools.
             - collection - Only collection-type pools.
@@ -1045,12 +1411,12 @@ class DanbooruPools(DanbooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的图集列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
-            
-        Note: 
-            danbooru pool 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/pools?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/pools.json?limit=1000&page=1001 网页中会返回：  
+
+        Note:
+            danbooru pool 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/pools?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/pools.json?limit=1000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -1073,14 +1439,16 @@ class DanbooruPools(DanbooruComponent):
             query = {}
         if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 1000
-            logger.warning(f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000.")
-        url = '/pools.json'
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
+            )
+        url = "/pools.json"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
         }
         # 更新搜索参数
         params.update(query)
@@ -1094,12 +1462,16 @@ class DanbooruPools(DanbooruComponent):
                 limit=limit,
                 query=query,
             )
-            logger.info(f"Maximum page number is equal to {max_page} for {limit = }, {query = }")
+            logger.info(
+                f"Maximum page number is equal to {max_page} for {limit = }, {query = }"
+            )
 
             if max_page > self.client.MAX_PAGE:
                 remain_page = max_page - self.client.MAX_PAGE
                 max_page = self.client.MAX_PAGE  # 限制最大页码不超过每次搜索的最大页数
-                logger.warning(f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -1107,18 +1479,22 @@ class DanbooruPools(DanbooruComponent):
                 params=params,
                 start_page=1,
                 end_page=max_page,
-                page_key='page',
+                page_key="page",
             )
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
             if start_page > self.client.MAX_PAGE:
                 remain_page = start_page - self.client.MAX_PAGE
                 start_page = self.client.MAX_PAGE
-                logger.warning(f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
             if end_page > self.client.MAX_PAGE:
                 remain_page = end_page - self.client.MAX_PAGE
                 end_page = self.client.MAX_PAGE
-                logger.warning(f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -1126,7 +1502,7 @@ class DanbooruPools(DanbooruComponent):
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
-                page_key='page',
+                page_key="page",
             )
         return pd.DataFrame(result)
 
@@ -1136,12 +1512,12 @@ class DanbooruPools(DanbooruComponent):
     ) -> pd.DataFrame:
         """
         Show
-        
+
         HTTP Method	    GET
         Base URL	    /pools/$id.json
         Type	        read request
         Description	    $id is the pool ID
-        
+
         Return json format:
         ```
         {
@@ -1157,48 +1533,50 @@ class DanbooruPools(DanbooruComponent):
             "post_count": 162
         }
         ```
-        
+
         获取指定 id 的图集列表
-        
+
         Args:
             id (int): 图集 id
-            
+
         Note:
             该方法与指定 search[id]/search[name] 参数的 index 方法类似，**但是**返回的结果列表仅包含一个图集
 
         Returns:
             pd.DataFrame: 请求结果列表
         """
-        url = f'/pools/{id}.json'
+        url = f"/pools/{id}.json"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {}
         # 结果列表
-        result: list[dict] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+        result: list[
+            dict
+        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
             url,
             headers=headers,
             params=params,
         )
         return pd.DataFrame(result)
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def delete(self, ):
+    def delete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def undelete(self, ):
+    def undelete(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert(self, ):
+    def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -1236,10 +1614,12 @@ class DanbooruPools(DanbooruComponent):
         )
 
         # 过滤空图集
-        empty_mask = pools['post_count'] == 0  # danbooru 中可能存在空图集
+        empty_mask = pools["post_count"] == 0  # danbooru 中可能存在空图集
         if not empty_mask.empty:
             empty_pools = pools[empty_mask]
-            logger.info(f"Found {len(empty_pools)} empty pools, which will be ignored. Empty pools: {empty_pools['name'].to_list()}")
+            logger.info(
+                f"Found {len(empty_pools)} empty pools, which will be ignored. Empty pools: {empty_pools['name'].to_list()}"
+            )
             pools = pools[~empty_mask]
 
         if pools.empty:
@@ -1247,23 +1627,27 @@ class DanbooruPools(DanbooruComponent):
             return
 
         # 图集中的帖子 id 列表
-        post_ids = pools['post_ids']
+        post_ids = pools["post_ids"]
         # 图集名称
-        names = pools['name']
+        names = pools["name"]
 
         # 遍历图集列表
         for ids, name in zip(post_ids, names):
             # 异步任务列表
-            tasks = [self.client.posts.show(id=id) for id in ids]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
+            tasks = [
+                self.client.posts.show(id=id) for id in ids
+            ]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
             # 并发获取图集 ID 下所有帖子
-            task_result: list[pd.DataFrame] = await asyncio.gather(*tasks, return_exceptions=True)
+            task_result: list[pd.DataFrame] = await asyncio.gather(
+                *tasks, return_exceptions=True
+            )
             # 合并所有帖子
-            posts = pd.concat(task_result, axis=0, join='outer', ignore_index=True)
+            posts = pd.concat(task_result, axis=0, join="outer", ignore_index=True)
 
             # 下载帖子
-            urls = posts['file_url']  # 帖子 URLs
-            posts_directory = os.path.join(self.directory, f'{name}')  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, 'images')  # 图像文件目录
+            urls = posts["file_url"]  # 帖子 URLs
+            posts_directory = os.path.join(self.directory, f"{name}")  # 帖子文件目录
+            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
             result: list[tuple[str, str]] = await self.client.concurrent_download_file(
                 urls,
                 images_directory,
@@ -1275,8 +1659,12 @@ class DanbooruPools(DanbooruComponent):
 
             # 获取下载成功的帖子 url 以及文件路径
             successful_urls = pd.Series([res[0] for res in result if res is not None])
-            successful_filepaths = pd.Series([res[1] for res in result if res is not None])
-            logger.info(f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for pool: {name}")
+            successful_filepaths = pd.Series(
+                [res[1] for res in result if res is not None]
+            )
+            logger.info(
+                f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for pool: {name}"
+            )
 
             # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
             successful_url_indices = urls[urls.isin(successful_urls)].index
@@ -1284,9 +1672,13 @@ class DanbooruPools(DanbooruComponent):
             # 保存帖子 api 响应的元数据（json 格式）
             if save_raws:
                 # 保存元数据
-                raws = [posts.loc[[index]] for index in successful_url_indices]  # 筛选后的元数据
-                raws_directory = os.path.join(posts_directory, 'raws')  # 元数据文件目录
-                raws_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.json')  # 元数据文件名
+                raws = [
+                    posts.loc[[index]] for index in successful_url_indices
+                ]  # 筛选后的元数据
+                raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
+                raws_filenames = successful_filepaths.apply(
+                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
+                )  # 元数据文件名
                 await self.client.concurrent_save_raws(
                     raws,
                     raws_directory,
@@ -1296,11 +1688,13 @@ class DanbooruPools(DanbooruComponent):
             # 保存标签
             if save_tags:
                 # 帖子标签
-                tags = posts['tag_string']
+                tags = posts["tag_string"]
                 # 保存标签
                 tags = tags[successful_url_indices]  # 筛选后的 tags
-                tags_directory = os.path.join(posts_directory, 'tags')  # 标签文件目录
-                tags_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.txt')  # 标签文件名
+                tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
+                tags_filenames = successful_filepaths.apply(
+                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
+                )  # 标签文件名
                 await self.client.concurrent_save_tags(
                     tags,
                     tags_directory,
@@ -1324,11 +1718,11 @@ class DanbooruPostVersions(DanbooruComponent):
         """
         使用定位 html 分页器的方式，获取指定搜索参数帖子版本的最大页码
 
-        Note: 
-            danbooru post history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/post_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/post_versions.json?limit=10000&page=1001 网页中会返回：  
+        Note:
+            danbooru post history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/post_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/post_versions.json?limit=10000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -1344,7 +1738,7 @@ class DanbooruPostVersions(DanbooruComponent):
                 ]
             }
             ```
-            
+
         Args:
             limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
             query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
@@ -1354,13 +1748,13 @@ class DanbooruPostVersions(DanbooruComponent):
         """
         if query is None:
             query = {}
-        url = '/post_versions'
+        url = "/post_versions"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
         }
         # 更新搜索参数
         params.update(query)
@@ -1378,13 +1772,13 @@ class DanbooruPostVersions(DanbooruComponent):
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为当前页向后 +4 页或最后一页
             pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
             if pagination:  # 存在分页器，说明该页面至少有两页
-                current_page = int(pagination[-2].xpath('./text()')[0])
+                current_page = int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
 
             # TODO 改变 xpath 表达式（并非从第一页开始）
             #!gap some page
-            params['page'] = gap_page = current_page
+            params["page"] = gap_page = current_page
             while gap_page < 1000:
                 current_page = gap_page
                 response = await self.client.get(url, headers=headers, params=params)
@@ -1392,23 +1786,25 @@ class DanbooruPostVersions(DanbooruComponent):
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
-                pagination = tree.xpath('???')
+                pagination = tree.xpath("???")
                 if pagination:  # 存在分页器，说明该页面至少有两页
                     gap_page  # TODO update gap_page
-                    params['page'] = gap_page
+                    params["page"] = gap_page
                 else:
                     pass
 
             # TODO 改变 xpath 表达式（并非从第一页开始）
             #!slow down, check any remain page is exist or not
-            for i in range(current_page, 1000 + 1):  # (1 + 4 * 249) = 997, range in [997, 1000]
-                params['page'] = i
+            for i in range(
+                current_page, 1000 + 1
+            ):  # (1 + 4 * 249) = 997, range in [997, 1000]
+                params["page"] = i
                 response = await self.client.get(url, headers=headers, params=params)
                 response.raise_for_status()
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
-                pagination = tree.xpath('???')
+                pagination = tree.xpath("???")
                 if pagination:  # 存在分页器，说明该页面至少有两页
                     pass
                 else:  # 不存在分页器，说明该页面只有一页
@@ -1427,14 +1823,14 @@ class DanbooruPostVersions(DanbooruComponent):
     ) -> pd.DataFrame:
         """
         Index
-        
+
         HTTP Method	    GET
         Base URL	    /post_versions.json
         Type	        read request
         Description	    The default order is ID descending.
-        
+
         Search attributes
-        
+
         All of the following are standard attributes with all of their available formats and qualifiers.
 
         - Number syntax
@@ -1445,23 +1841,23 @@ class DanbooruPostVersions(DanbooruComponent):
             - version
             - created_at
             - updated_at
-        
+
         - Text syntax
             - tags
             - rating
             - source
-        
+
         - Boolean syntax
             - rating_changed
             - parent_changed
             - source_changed
-        
+
         - Array syntax
             - added_tags
             - removed_tags
-        
+
         Special search parameters
-        
+
         - changed_tags - Search where all tags must be either an added tag or removed tag
             - The list of tags is space-delineated
         - all_changed_tags - The same as changed_tags
@@ -1508,12 +1904,12 @@ class DanbooruPostVersions(DanbooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的帖子版本列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
-            
-        Note: 
-            danbooru post history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子版本数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/post_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/post_versions.json?limit=10000&page=1001 网页中会返回：  
+
+        Note:
+            danbooru post history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子版本数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/post_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/post_versions.json?limit=10000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -1537,14 +1933,16 @@ class DanbooruPostVersions(DanbooruComponent):
             query = {}
         if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 1000
-            logger.warning(f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000.")
-        url = '/post_versions.json'
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
+            )
+        url = "/post_versions.json"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
         }
         # 更新搜索参数
         params.update(query)
@@ -1558,12 +1956,16 @@ class DanbooruPostVersions(DanbooruComponent):
                 limit=limit,
                 query=query,
             )
-            logger.info(f"Maximum page number is equal to {max_page} for {limit = }, {query = }")
+            logger.info(
+                f"Maximum page number is equal to {max_page} for {limit = }, {query = }"
+            )
 
             if max_page > self.client.MAX_PAGE:
                 remain_page = max_page - self.client.MAX_PAGE
                 max_page = self.client.MAX_PAGE  # 限制最大页码不超过每次搜索的最大页数
-                logger.warning(f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -1571,18 +1973,22 @@ class DanbooruPostVersions(DanbooruComponent):
                 params=params,
                 start_page=1,
                 end_page=max_page,
-                page_key='page',
+                page_key="page",
             )
         # 获取在起始页码与结束页码范围内，指定标题的帖子版本列表
         else:
             if start_page > self.client.MAX_PAGE:
                 remain_page = start_page - self.client.MAX_PAGE
                 start_page = self.client.MAX_PAGE
-                logger.warning(f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
             if end_page > self.client.MAX_PAGE:
                 remain_page = end_page - self.client.MAX_PAGE
                 end_page = self.client.MAX_PAGE
-                logger.warning(f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -1590,7 +1996,7 @@ class DanbooruPostVersions(DanbooruComponent):
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
-                page_key='page',
+                page_key="page",
             )
         return pd.DataFrame(result)
 
@@ -1611,11 +2017,11 @@ class DanbooruPoolVersions(DanbooruComponent):
         """
         使用定位 html 分页器的方式，获取指定搜索参数图集版本的最大页码
 
-        Note: 
-            danbooru pool history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集版本数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/pool_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/pool_versions.json?limit=10000&page=1001 网页中会返回：  
+        Note:
+            danbooru pool history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集版本数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/pool_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/pool_versions.json?limit=10000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -1631,7 +2037,7 @@ class DanbooruPoolVersions(DanbooruComponent):
                 ]
             }
             ```
-            
+
         Args:
             limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
             query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
@@ -1641,13 +2047,13 @@ class DanbooruPoolVersions(DanbooruComponent):
         """
         if query is None:
             query = {}
-        url = '/pool_versions'
+        url = "/pool_versions"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
         }
         # 更新搜索参数
         params.update(query)
@@ -1665,13 +2071,13 @@ class DanbooruPoolVersions(DanbooruComponent):
             # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为当前页向后 +4 页或最后一页
             pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
             if pagination:  # 存在分页器，说明该页面至少有两页
-                current_page = int(pagination[-2].xpath('./text()')[0])
+                current_page = int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
 
             # TODO 改变 xpath 表达式（并非从第一页开始）
             #!gap some page
-            params['page'] = gap_page = current_page
+            params["page"] = gap_page = current_page
             while gap_page < 1000:
                 current_page = gap_page
                 response = await self.client.get(url, headers=headers, params=params)
@@ -1679,23 +2085,25 @@ class DanbooruPoolVersions(DanbooruComponent):
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
-                pagination = tree.xpath('???')
+                pagination = tree.xpath("???")
                 if pagination:  # 存在分页器，说明该页面至少有两页
                     gap_page  # TODO update gap_page
-                    params['page'] = gap_page
+                    params["page"] = gap_page
                 else:
                     pass
 
             # TODO 改变 xpath 表达式（并非从第一页开始）
             #!slow down, check any remain page is exist or not
-            for i in range(current_page, 1000 + 1):  # (1 + 4 * 249) = 997, range in [997, 1000]
-                params['page'] = i
+            for i in range(
+                current_page, 1000 + 1
+            ):  # (1 + 4 * 249) = 997, range in [997, 1000]
+                params["page"] = i
                 response = await self.client.get(url, headers=headers, params=params)
                 response.raise_for_status()
                 # 解析 html 分页器中的最大页码
                 tree = etree.HTML(response.text)
                 # TODO
-                pagination = tree.xpath('???')
+                pagination = tree.xpath("???")
                 if pagination:  # 存在分页器，说明该页面至少有两页
                     pass
                 else:  # 不存在分页器，说明该页面只有一页
@@ -1714,16 +2122,16 @@ class DanbooruPoolVersions(DanbooruComponent):
     ) -> pd.DataFrame:
         """
         Index
-        
+
         HTTP Method	    GET
         Base URL	    /pool_versions.json
         Type	        read request
         Description	    The default order is ID descending.
-        
+
         Search attributes
-        
+
         All of the following are standard attributes with all of their available formats and qualifiers.
-        
+
         - Number syntax
             - id
             - pool_id
@@ -1731,25 +2139,25 @@ class DanbooruPoolVersions(DanbooruComponent):
             - version
             - created_at
             - updated_at
-        
+
         - Text syntax
             - name
             - description
             - category
-        
+
         - Boolean syntax
             - name_changed
             - description_changed
             - is_active
             - is_deleted
-        
+
         - Array syntax
             - post_ids
             - added_post_ids
             - removed_post_ids
-        
+
         Special search parameters
-        
+
         - name_matches - Case-insensitive normalized wildcard search on the name field. current version can't use. (M)
         - updater_name - Case-insensitive updater name to updater ID search.
         - post_id - Searches for a single post being added or removed from a pool.
@@ -1791,12 +2199,12 @@ class DanbooruPoolVersions(DanbooruComponent):
             start_page (int, optional): 查询起始页码. Defaults to 1.
             end_page (int, optional): 查询结束页码. Defaults to 1.
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的图集版本列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
-            
-        Note: 
-            danbooru pool history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集版本数量调整 html 分页器中的最大页码  
-            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000  
-            否则在 https://danbooru.donmai.us/pool_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示  
-            在 https://danbooru.donmai.us/pool_versions.json?limit=10000&page=1001 网页中会返回：  
+
+        Note:
+            danbooru pool history 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际图集版本数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/pool_versions?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/pool_versions.json?limit=10000&page=1001 网页中会返回：
             ```
             {
                 "success": false,
@@ -1812,7 +2220,7 @@ class DanbooruPoolVersions(DanbooruComponent):
                 ]
             }
             ```
-            
+
             search[name_matches] 搜索参数版本当前无法使用，返回结果为：
             ```
             {
@@ -1837,14 +2245,16 @@ class DanbooruPoolVersions(DanbooruComponent):
             query = {}
         if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 1000
-            logger.warning(f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000.")
-        url = '/pool_versions.json'
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
+            )
+        url = "/pool_versions.json"
         headers = {
-            'User-Agent': 'python',  # wtf? why you let this UA pass and block my normal UA?
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
         }
         params = {
-            'limit': limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            'page': 1,  # 查询页码
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
         }
         # 更新搜索参数
         params.update(query)
@@ -1858,12 +2268,16 @@ class DanbooruPoolVersions(DanbooruComponent):
                 limit=limit,
                 query=query,
             )
-            logger.info(f"Maximum page number is equal to {max_page} for {limit = }, {query = }")
+            logger.info(
+                f"Maximum page number is equal to {max_page} for {limit = }, {query = }"
+            )
 
             if max_page > self.client.MAX_PAGE:
                 remain_page = max_page - self.client.MAX_PAGE
                 max_page = self.client.MAX_PAGE  # 限制最大页码不超过每次搜索的最大页数
-                logger.warning(f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -1871,18 +2285,22 @@ class DanbooruPoolVersions(DanbooruComponent):
                 params=params,
                 start_page=1,
                 end_page=max_page,
-                page_key='page',
+                page_key="page",
             )
         # 获取在起始页码与结束页码范围内，指定标题的图集版本列表
         else:
             if start_page > self.client.MAX_PAGE:
                 remain_page = start_page - self.client.MAX_PAGE
                 start_page = self.client.MAX_PAGE
-                logger.warning(f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
             if end_page > self.client.MAX_PAGE:
                 remain_page = end_page - self.client.MAX_PAGE
                 end_page = self.client.MAX_PAGE
-                logger.warning(f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}")
+                logger.warning(
+                    f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
 
             result = await self.client.concurrent_fetch_page(
                 url,
@@ -1890,6 +2308,6 @@ class DanbooruPoolVersions(DanbooruComponent):
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
-                page_key='page',
+                page_key="page",
             )
         return pd.DataFrame(result)

@@ -15,23 +15,21 @@ from .utils import logger
 
 __all__ = [
     # base classes
-    'Moebooru',
-    'MoebooruComponent',
-
+    "Moebooru",
+    "MoebooruComponent",
     # client classes
-    'YandereClient',
-
+    "YandereClient",
     # component classes
-    'YanderePosts',
-    'YandereTags',
-    'YandereArtists',
-    'YandereComments',
-    'YandereWiki',
-    'YandereNotes',
-    'YandereUsers',
-    'YandereForum',
-    'YanderePools',
-    'YandereFavorites',
+    "YanderePosts",
+    "YandereTags",
+    "YandereArtists",
+    "YandereComments",
+    "YandereWiki",
+    "YandereNotes",
+    "YandereUsers",
+    "YandereForum",
+    "YanderePools",
+    "YandereFavorites",
 ]
 
 
@@ -62,7 +60,7 @@ class YandereClient(Moebooru):
         super().__init__(**kwargs)
 
         # 设置发送相对 URL 请求时使用的基础 URL
-        self.base_url = 'https://yande.re'
+        self.base_url = "https://yande.re"
 
         # 初始化各组件
         self.posts = YanderePosts(self)
@@ -94,13 +92,13 @@ class YanderePosts(MoebooruComponent):
     async def list_gt_page(
         self,
         limit: int = 40,
-        tags: str = '',
+        tags: str = "",
     ) -> int:
         """
         使用定位 html 分页器的方式，获取指定标签帖子列表的最大页码
-        
-        Note: 
-            对于 post 页面，返回的 html 分页器中的最大页码由于 yande.re 网站中的某些 Hidden Posts 策略（rating:e, blacklists .etc），实际的最大页码会大于等于该页码  
+
+        Note:
+            对于 post 页面，返回的 html 分页器中的最大页码由于 yande.re 网站中的某些 Hidden Posts 策略（rating:e, blacklists .etc），实际的最大页码会大于等于该页码
             yande.re post 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际帖子数量调整 html 分页器中的最大页码
 
         Args:
@@ -110,11 +108,11 @@ class YanderePosts(MoebooruComponent):
         Returns:
             int: html 分页器中的最大页码，实际的最大页码会大于等于该页码
         """
-        url = '/post'
+        url = "/post"
         params = {
-            'limit': limit,  # 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇
-            'page': 1,  # 查询页码
-            'tags': tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
+            "limit": limit,  # 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇
+            "page": 1,  # 查询页码
+            "tags": tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
         }
         try:
             response = await self.client.get(url, params=params)
@@ -136,20 +134,20 @@ class YanderePosts(MoebooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        tags: str = '',
+        tags: str = "",
     ) -> pd.DataFrame:
         """
         List
-        
+
         The base URL is /post.xml.
-        
+
         - limit: How many posts you want to retrieve. There is a hard limit of 100 posts per request.
         - page: The page number.
         - tags: The tags to search for. Any tag combination that works on the web site will work here. This includes all the meta-tags.
 
-        Note: 
+        Note:
             修订 API 参考文件: https://yande.re/help/api: limit: How many posts you want to retrieve. There is a hard limit of 100 posts per request. 将其更改为：limit: How many posts you want to retrieve. There is a hard limit of 1000 posts per request.
-        
+
         Return json format:
         ```
         [
@@ -204,7 +202,7 @@ class YanderePosts(MoebooruComponent):
         ```
 
         获取在起始页码与结束页码范围内，指定标签的帖子列表；若 all_page 为 True，则获取当前查询标签下所有页码的帖子列表
-        
+
         Args:
             limit (int, optional): 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇. Defaults to 40.
             start_page (int, optional): 查询起始页码. Defaults to 1.
@@ -217,12 +215,14 @@ class YanderePosts(MoebooruComponent):
         """
         if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
             limit = 1000
-            logger.warning(f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000.")
-        url = '/post.json'
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
+            )
+        url = "/post.json"
         params = {
-            'limit': limit,  # 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇
-            'page': 1,  # 查询页码
-            'tags': tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
+            "limit": limit,  # 您想检索多少篇帖子。每次请求的帖子数量有一个硬性限制，最多 1000 篇
+            "page": 1,  # 查询页码
+            "tags": tags,  # 要搜索的标签。任何在网站上有效的标签组合在这里都有效。这包括所有元标签。要组合的不同标签使用空格连接，同一标签中的空格使用 _ 替换
         }
         # 结果列表
         result: list[dict] = []
@@ -232,25 +232,29 @@ class YanderePosts(MoebooruComponent):
                 limit=limit,
                 tags=tags,
             )
-            logger.info(f"Maximum page number is greater than or equal to {gt_page} for {limit = }, {tags = }")
+            logger.info(
+                f"Maximum page number is greater than or equal to {gt_page} for {limit = }, {tags = }"
+            )
 
             result = await self.client.concurrent_fetch_page(
                 url,
                 params=params,
                 start_page=1,
                 end_page=gt_page,
-                page_key='page',
+                page_key="page",
             )
 
             #!仅适用于 posts 页面
             #!为防止遗漏帖子列表，回退至非并发模式获取 html 分页器中的最大页码之后的帖子列表
-            logger.info(f"Fetching posts after {gt_page} page for {limit = }, {tags = }")
+            logger.info(
+                f"Fetching posts after {gt_page} page for {limit = }, {tags = }"
+            )
 
             # 当前查询页码
             page = gt_page + 1
             # 直到获取到空数据为止
             while True:
-                params.update({'page': page})
+                params.update({"page": page})
                 content: list[dict] = await self.client.fetch_page(
                     url,
                     params=params,
@@ -267,27 +271,27 @@ class YanderePosts(MoebooruComponent):
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
-                page_key='page',
+                page_key="page",
             )
         return pd.DataFrame(result)
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def destroy(self, ):
+    def destroy(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert_tags(self, ):
+    def revert_tags(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def vote(self, ):
+    def vote(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -297,7 +301,7 @@ class YanderePosts(MoebooruComponent):
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
-        tags: str = '',
+        tags: str = "",
         save_raws: bool = False,
         save_tags: bool = False,
     ) -> None:
@@ -327,22 +331,28 @@ class YanderePosts(MoebooruComponent):
             return
 
         # 下载帖子
-        urls = posts['file_url']  # 帖子 URLs
-        posts_directory = os.path.join(self.directory, f'{tags if tags !="" else "all"}')  # 帖子文件目录
-        images_directory = os.path.join(posts_directory, 'images')  # 图像文件目录
+        urls = posts["file_url"]  # 帖子 URLs
+        posts_directory = os.path.join(
+            self.directory, f"{tags if tags != '' else 'all'}"
+        )  # 帖子文件目录
+        images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
         result: list[tuple[str, str]] = await self.client.concurrent_download_file(
             urls,
             images_directory,
         )
 
         if not result:
-            logger.info(f"Downloaded 0 successful, 0 failed for posts: {posts['id'].tolist()}")
+            logger.info(
+                f"Downloaded 0 successful, 0 failed for posts: {posts['id'].tolist()}"
+            )
             return
 
         # 获取下载成功的帖子 url 以及文件路径
         successful_urls = pd.Series([res[0] for res in result if res is not None])
         successful_filepaths = pd.Series([res[1] for res in result if res is not None])
-        logger.info(f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for posts: {posts['id'].tolist()}")
+        logger.info(
+            f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for posts: {posts['id'].tolist()}"
+        )
 
         # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
         successful_url_indices = urls[urls.isin(successful_urls)].index
@@ -350,9 +360,13 @@ class YanderePosts(MoebooruComponent):
         # 保存帖子 api 响应的元数据（json 格式）
         if save_raws:
             # 保存元数据
-            raws = [posts.loc[[index]] for index in successful_url_indices]  # 筛选后的元数据
-            raws_directory = os.path.join(posts_directory, 'raws')  # 元数据文件目录
-            raws_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.json')  # 元数据文件名
+            raws = [
+                posts.loc[[index]] for index in successful_url_indices
+            ]  # 筛选后的元数据
+            raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
+            raws_filenames = successful_filepaths.apply(
+                lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
+            )  # 元数据文件名
             await self.client.concurrent_save_raws(
                 raws,
                 raws_directory,
@@ -362,10 +376,12 @@ class YanderePosts(MoebooruComponent):
         # 保存标签
         if save_tags:
             # 帖子标签
-            tags = posts['tags']
+            tags = posts["tags"]
             tags = tags[successful_url_indices]  # 筛选后的 tags
-            tags_directory = os.path.join(posts_directory, 'tags')  # 标签文件目录
-            tags_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.txt')  # 标签文件名
+            tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
+            tags_filenames = successful_filepaths.apply(
+                lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
+            )  # 标签文件名
             await self.client.concurrent_save_tags(
                 tags,
                 tags_directory,
@@ -381,15 +397,15 @@ class YandereTags(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def list(self, ):
+    def list(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def related(self, ):
+    def related(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -402,19 +418,19 @@ class YandereArtists(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def list(self, ):
+    def list(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def destroy(self, ):
+    def destroy(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -427,15 +443,15 @@ class YandereComments(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def destory(self, ):
+    def destory(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -448,39 +464,39 @@ class YandereWiki(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def list(self, ):
+    def list(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def show(self, ):
+    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def destroy(self, ):
+    def destroy(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def lock(self, ):
+    def lock(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def unlock(self, ):
+    def unlock(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert(self, ):
+    def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def history(self, ):
+    def history(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -493,27 +509,27 @@ class YandereNotes(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def list(self, ):
+    def list(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def search(self, ):
+    def search(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def history(self, ):
+    def history(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def revert(self, ):
+    def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create(self, ):
+    def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def update(self, ):
+    def update(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -526,7 +542,7 @@ class YandereUsers(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def search(self, ):
+    def search(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -539,7 +555,7 @@ class YandereForum(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def list(self, ):
+    def list(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -554,13 +570,13 @@ class YanderePools(MoebooruComponent):
 
     async def list_pools_page(
         self,
-        query: str = '',
+        query: str = "",
     ) -> int:
         """
         使用定位 html 分页器的方式，获取指定查询标题图集的最大页码
-        
-        Note: 
-            对于 pool 页面，由于不存在 Hidden Posts 策略（rating:e, blacklists .etc），实际的最大页码会等于该页码  
+
+        Note:
+            对于 pool 页面，由于不存在 Hidden Posts 策略（rating:e, blacklists .etc），实际的最大页码会等于该页码
             yande.re/pool 页面受 page 参数影响，但不受 limit 参数影响
 
         Args:
@@ -569,10 +585,10 @@ class YanderePools(MoebooruComponent):
         Returns:
             int: html 分页器中的最大页码，实际的最大页码等于该页码
         """
-        url = '/pool'
+        url = "/pool"
         params = {
-            'query': query,  # 查询标题
-            'page': 1,  # 查询页码
+            "query": query,  # 查询标题
+            "page": 1,  # 查询页码
         }
         try:
             response = await self.client.get(url, params=params)
@@ -590,19 +606,19 @@ class YanderePools(MoebooruComponent):
 
     async def list_pools(
         self,
-        query: str = '',
+        query: str = "",
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
     ) -> pd.DataFrame:
         """
         List Pools
-        
+
         The base URL is /pool.xml. If you don't specify any parameters you'll get a list of all pools.
-        
+
         - query: The title.
         - page: The page.
-        
+
         Return json format:
         ```
         [
@@ -619,10 +635,10 @@ class YanderePools(MoebooruComponent):
             ...
         ]
         ```
-    
+
         获取在起始页码与结束页码范围内，指定标题的图集列表；若 all_page 为 True，则获取当前查询标题下所有页码的图集列表
-        
-        Note: 
+
+        Note:
             yande.re/pool 接口受 page 参数影响，但不受 limit 参数影响
 
         Args:
@@ -634,16 +650,18 @@ class YanderePools(MoebooruComponent):
         Returns:
             pd.DataFrame: 请求结果列表
         """
-        url = '/pool.json'
+        url = "/pool.json"
         params = {
-            'query': query,  # 查询标题
-            'page': 1,  # 查询页码
+            "query": query,  # 查询标题
+            "page": 1,  # 查询页码
         }
         # 结果列表
         result: list[dict] = []
         # 获取当前查询标题下所有页码的图集列表
         if all_page:
-            max_page = await self.list_pools_page(query=query, )  # 获取 html 分页器中的最大页码
+            max_page = await self.list_pools_page(
+                query=query,
+            )  # 获取 html 分页器中的最大页码
             logger.info(f"Maximum page number is equal to {max_page} for {query = }")
 
             result = await self.client.concurrent_fetch_page(
@@ -651,7 +669,7 @@ class YanderePools(MoebooruComponent):
                 params=params,
                 start_page=1,
                 end_page=max_page,
-                page_key='page',
+                page_key="page",
             )
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -660,7 +678,7 @@ class YanderePools(MoebooruComponent):
                 params=params,
                 start_page=start_page,
                 end_page=end_page,
-                page_key='page',
+                page_key="page",
             )
         return pd.DataFrame(result)
 
@@ -670,18 +688,18 @@ class YanderePools(MoebooruComponent):
     ) -> pd.DataFrame:
         """
         List Posts
-        
+
         The base URL is /pool/show.xml. If you don't specify any parameters you'll get a list of all pools.
-        
+
         Note:
-            - 修订 API 参考文件: https://yande.re/help/api: If you don't specify any parameters you'll get a list of all pools. 将其更改为：If you don't specify any parameters you'll get a list of pool which id is 0.  
-            - id 参数是必须的，否则访问 https://yande.re/pool/show 或 https://yande.re/pool/show.json 是会自动跳转回 https://yande.re/pool/ 页面，并弹出 Can't find pool with id 0 提示  
+            - 修订 API 参考文件: https://yande.re/help/api: If you don't specify any parameters you'll get a list of all pools. 将其更改为：If you don't specify any parameters you'll get a list of pool which id is 0.
+            - id 参数是必须的，否则访问 https://yande.re/pool/show 或 https://yande.re/pool/show.json 是会自动跳转回 https://yande.re/pool/ 页面，并弹出 Can't find pool with id 0 提示
             - page 参数是可选的，pool/show 页面默认不以分页策略展示，所有内容均在一页中展示（忽略 limit 参数），设置为 1 即可。若需要分页策略，需点击页面最下方的 "Index View" 按钮，对于 id 为 1746 的图集，将跳转至 /post?tags=pool%3A1746 访问（即 /post?tags=pool:1746）
-            - 图集支持批量下载，需点击页面最下方的 "Download" 按钮，对于 id 为 1746 的图集，将跳转至 /pool/zip/1746 访问，但需要用户登录后才能下载  
-            
+            - 图集支持批量下载，需点击页面最下方的 "Download" 按钮，对于 id 为 1746 的图集，将跳转至 /pool/zip/1746 访问，但需要用户登录后才能下载
+
         - id: The pool id number.
         - page: The page.
-        
+
         Return json format:
         ```
         {
@@ -736,19 +754,19 @@ class YanderePools(MoebooruComponent):
             ]
         }
         ```
-        
+
         获取指定 id 的图集列表
 
         Args:
             id (int): 图集 id
-            
+
         Returns:
             pd.DataFrame: 请求结果列表
         """
-        url = '/pool/show.json'
+        url = "/pool/show.json"
         params = {
-            'id': id,  # 图集的 ID 号码
-            'page': 1,  # 查询页码
+            "id": id,  # 图集的 ID 号码
+            "page": 1,  # 查询页码
         }
         # 结果列表
         result: list[dict] = await self.client.concurrent_fetch_page(
@@ -756,34 +774,34 @@ class YanderePools(MoebooruComponent):
             params=params,
             start_page=1,
             end_page=1,
-            page_key='page',
-            callback=lambda x: x.get('posts', []),  # 获取帖子列表
+            page_key="page",
+            callback=lambda x: x.get("posts", []),  # 获取帖子列表
         )
         return pd.DataFrame(result)
 
-    def update_pool(self, ):
+    def update_pool(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def create_pool(self, ):
+    def create_pool(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def destroy_pool(self, ):
+    def destroy_pool(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def add_post(self, ):
+    def add_post(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
-    def remove_post(self, ):
+    def remove_post(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
     async def download(
         self,
-        query: str = '',
+        query: str = "",
         start_page: int = 1,
         end_page: int = 1,
         all_page: bool = False,
@@ -814,9 +832,9 @@ class YanderePools(MoebooruComponent):
             return
 
         # 图集 id
-        ids = pools['id']
+        ids = pools["id"]
         # 图集名称
-        names = pools['name']
+        names = pools["name"]
 
         # 遍历图集列表
         for id, name in zip(ids, names):
@@ -826,9 +844,9 @@ class YanderePools(MoebooruComponent):
             )
 
             # 下载帖子
-            urls = posts['file_url']  # 帖子 URLs
-            posts_directory = os.path.join(self.directory, f'{name}')  # 帖子文件目录
-            images_directory = os.path.join(posts_directory, 'images')  # 图像文件目录
+            urls = posts["file_url"]  # 帖子 URLs
+            posts_directory = os.path.join(self.directory, f"{name}")  # 帖子文件目录
+            images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
             result: list[tuple[str, str]] = await self.client.concurrent_download_file(
                 urls,
                 images_directory,
@@ -840,8 +858,12 @@ class YanderePools(MoebooruComponent):
 
             # 获取下载成功的帖子 url 以及文件路径
             successful_urls = pd.Series([res[0] for res in result if res is not None])
-            successful_filepaths = pd.Series([res[1] for res in result if res is not None])
-            logger.info(f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for pool: {name}")
+            successful_filepaths = pd.Series(
+                [res[1] for res in result if res is not None]
+            )
+            logger.info(
+                f"Downloaded {successful_urls.size} successful, {len(result) - successful_urls.size} failed for pool: {name}"
+            )
 
             # 从全部 url 中过滤出下载成功的 url 中的索引，并用于后续的筛选（仅保存下载成功的 url 额外数据）
             successful_url_indices = urls[urls.isin(successful_urls)].index
@@ -849,9 +871,13 @@ class YanderePools(MoebooruComponent):
             # 保存帖子 api 响应的元数据（json 格式）
             if save_raws:
                 # 保存元数据
-                raws = [posts.loc[[index]] for index in successful_url_indices]  # 筛选后的元数据
-                raws_directory = os.path.join(posts_directory, 'raws')  # 元数据文件目录
-                raws_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.json')  # 元数据文件名
+                raws = [
+                    posts.loc[[index]] for index in successful_url_indices
+                ]  # 筛选后的元数据
+                raws_directory = os.path.join(posts_directory, "raws")  # 元数据文件目录
+                raws_filenames = successful_filepaths.apply(
+                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".json"
+                )  # 元数据文件名
                 await self.client.concurrent_save_raws(
                     raws,
                     raws_directory,
@@ -861,10 +887,12 @@ class YanderePools(MoebooruComponent):
             # 保存标签
             if save_tags:
                 # 帖子标签
-                tags = posts['tags']
+                tags = posts["tags"]
                 tags = tags[successful_url_indices]  # 筛选后的 tags
-                tags_directory = os.path.join(posts_directory, 'tags')  # 标签文件目录
-                tags_filenames = successful_filepaths.apply(lambda x: os.path.splitext(os.path.basename(x))[0] + '.txt')  # 标签文件名
+                tags_directory = os.path.join(posts_directory, "tags")  # 标签文件目录
+                tags_filenames = successful_filepaths.apply(
+                    lambda x: os.path.splitext(os.path.basename(x))[0] + ".txt"
+                )  # 标签文件名
                 await self.client.concurrent_save_tags(
                     tags,
                     tags_directory,
@@ -880,6 +908,6 @@ class YandereFavorites(MoebooruComponent):
     def __init__(self, client: YandereClient):
         super().__init__(client)
 
-    def list_users(self, ):
+    def list_users(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
