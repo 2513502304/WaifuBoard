@@ -1026,9 +1026,61 @@ class DanbooruTags(DanbooruComponent):
             ):
                 yield res
 
-    def show(self):
-        # TODO
-        raise NotImplementedError("The method is not implemented")
+    async def show(
+        self,
+        id: int,
+    ) -> list[dict] | None:
+        """
+        Show
+
+        HTTP Method	    GET
+        Base URL	    /tags/$id.json
+        Type	        read request
+        Description	    $id is the tag ID.
+
+        Return json format:
+        ```
+        {
+            "id": 2572471,
+            "name": "qwqiii_p",
+            "post_count": 0,
+            "category": 1,
+            "created_at": "2026-03-10T05:32:38.423-04:00",
+            "updated_at": "2026-03-10T05:32:38.423-04:00",
+            "is_deprecated": false,
+            "words": [
+                "qwqiii",
+                "p"
+            ]
+        }
+        ```
+
+        获取指定 id 的 tags 列表
+
+        Args:
+            id (int): tags id
+
+        Note:
+            该方法与指定 search[id]/search[name] 参数的 index 方法类似，**但是**返回的结果列表仅包含一个 tags
+
+        Returns:
+            list[dict] | None: 若获取成功，则返回对应的 tags 内容列表；若获取失败，则返回 None
+        """
+        url = f"/tags/{id}.json"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {}
+
+        # 结果列表
+        result: list[
+            dict
+        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+            url,
+            headers=headers,
+            params=params,
+        )
+        return result
 
     def update(self):
         # TODO
@@ -1357,9 +1409,60 @@ class DanbooruArtists(DanbooruComponent):
             ):
                 yield res
 
-    def show(self):
-        # TODO
-        raise NotImplementedError("The method is not implemented")
+    async def show(
+        self,
+        id: int,
+    ) -> list[dict] | None:
+        """
+        Show
+
+        HTTP Method	    GET
+        Base URL	    /artists/$id.json
+        Type	        read request
+        Description	    $id is the artist ID.
+
+        Return json format:
+        ```
+        {
+            "id": 616177,
+            "created_at": "2026-03-11T01:45:55.135-04:00",
+            "name": "kazari4510_imas",
+            "updated_at": "2026-03-11T01:45:55.141-04:00",
+            "is_deleted": false,
+            "group_name": "",
+            "is_banned": false,
+            "other_names": [
+                "かざり@"
+            ]
+        }
+        ```
+
+        获取指定 id 的艺术家列表
+
+        Args:
+            id (int): 艺术家 id
+
+        Note:
+            该方法与指定 search[id]/search[name] 参数的 index 方法类似，**但是**返回的结果列表仅包含一个艺术家
+
+        Returns:
+            list[dict] | None: 若获取成功，则返回对应的艺术家内容列表；若获取失败，则返回 None
+        """
+        url = f"/artists/{id}.json"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {}
+
+        # 结果列表
+        result: list[
+            dict
+        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+            url,
+            headers=headers,
+            params=params,
+        )
+        return result
 
     def create(self):
         # TODO
