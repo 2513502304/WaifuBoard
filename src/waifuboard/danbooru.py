@@ -85,7 +85,7 @@ class DanbooruClient(Danbooru):
         # 初始化各组件
         self.posts = DanbooruPosts(self)
         self.tags = DanbooruTags(self)
-        # self.artists = DanbooruArtists(self)
+        self.artists = DanbooruArtists(self)
         # self.comments = DanbooruComments(self)
         # self.wiki_pages = DanbooruWikiPages(self)
         # self.notes = DanbooruNotes(self)
@@ -1049,7 +1049,7 @@ class DanbooruTags(DanbooruComponent):
         overwrite: bool = False,
     ) -> None:
         """
-        下载在起始页码与结束页码范围内，指定标签的帖子列表中的帖子；若 all_page 为 True，则下载当前查询标签下所有页码的帖子列表中的帖子
+        下载在起始页码与结束页码范围内，指定搜索参数的 tags 列表；若 all_page 为 True，则获取当前搜索参数下所有页码的 tags 列表
 
         Args:
             limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
@@ -1059,7 +1059,7 @@ class DanbooruTags(DanbooruComponent):
             all_page (bool, optional): 是否获取当前搜索参数下所有页码的 tags 列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
             overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
         """
-        # 获取当前查询标签下所有页码的帖子列表中的帖子
+        # 获取当前查询下所有页码的 tags 列表
         async for i, tags in aenumerate(
             self.index(
                 limit=limit,
@@ -1074,7 +1074,7 @@ class DanbooruTags(DanbooruComponent):
                 logger.info(f"All of the tags {i + 1} are empty.")
                 continue
 
-            # 下载帖子
+            # 下载 tags
             tags_directory = os.path.join(self.directory, "tags")  # 标签文件目录
             for index, tag in tags.iterrows():
                 tags_filename = f"{tag['id']}.json"  # 标签文件名
@@ -1094,9 +1094,268 @@ class DanbooruArtists(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self):
-        # TODO
-        raise NotImplementedError("The method is not implemented")
+    async def index_page(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+    ) -> int:
+        """
+        使用定位 html 分页器的方式，获取指定搜索参数 tags 的最大页码
+
+        Note:
+            danbooru artists 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际艺术家数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/artists?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/artists.json?limit=1000&page=1001 网页中会返回：
+            ```
+            {
+                "success": false,
+                "error": "PaginationExtension::PaginationError",
+                "message": "You cannot go beyond page 1000.",
+                "backtrace": [
+                    "app/logical/pagination_extension.rb:54:in 'PaginationExtension#paginate'",
+                    "app/models/application_record.rb:18:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginate'",
+                    "app/models/application_record.rb:37:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginated_search'",
+                    "app/controllers/artists_controller.rb:9:in 'ArtistsController#index'",
+                    "app/logical/rack_server_timing.rb:19:in 'RackServerTiming#call'"
+                ]
+            }
+            ```
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+
+        Returns:
+            int: html 分页器中的最大页码，实际的最大页码等于该页码
+        """
+        if query is None:
+            query = {
+                "search[order]": "created_at",
+            }
+
+        url = "/artists"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+        }
+        # 更新搜索参数
+        params.update(query)
+
+        try:
+            response = await self.client.get(url, headers=headers, params=params)
+            # 解析 html 分页器中的最大页码
+            tree = etree.HTML(response.text)
+            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
+            #!若访问 pools/gallery 页面，则无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
+            #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
+            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
+            if pagination:  # 存在分页器，说明该页面至少有两页
+                return int(pagination[-2].xpath("./text()")[0])
+            else:  # 不存在分页器，说明该页面只有一页
+                return 1
+        except httpx.HTTPError as exc:
+            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+
+    async def index(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+        start_page: int = 1,
+        end_page: int = 1,
+        all_page: bool = False,
+    ) -> AsyncIterable[list[dict] | None]:
+        """
+
+        HTTP Method	    GET
+        Base URL	    /artists.json
+        Type	        read request
+        Description	    The default order is ID descending.
+
+        Search attributes
+
+        The following are the base fields along with their associated type. Check the syntax pages for all of the available variations.
+
+        Number syntax
+            - id
+            - created_at
+            - updated_at
+
+        String syntax
+            - name
+            - group_name
+
+        Boolean syntax
+            - is_deleted
+            - is_banned
+
+        Array syntax
+            - other_names
+
+        Chaining syntax
+            - urls
+            - wiki_page
+            - tag_alias
+            - tag
+
+        Special search parameters
+
+        The following are additional search fields.
+
+        - any_other_name_like - Search for artists that have an other name matching this value. Supports wildcards.
+        - any_name_matches - Search for artists that have a matching name, group name, or other name. Supports wildcards and regexes.
+        - url_matches - Search for artists with a matching URL.
+            - Does a regex match when the query starts and ends with a forward slash "/".
+                - Regexes must follow the Ruby's format.
+            - Does a wildcard match when there are asterisks "*" present.
+            - Uses the artist URL finder when the value is prefaced by http:// or https://
+                - This does a recursive search on URLs stripping the pathname one level at a time to search for matches.
+                - It will keep searching until it finds an exact match or 10 similar entries.
+            - Otherwise it does a wildcard search with wildcard placed at the start and end.
+        - any_name_or_url_matches - Searches for the artist by name or URL.
+            - Does a URL search if the value is prefaced by http:// or https://
+            - Does a name search otherwise.
+
+        Search order
+
+        Using the search parameter order with one of the following values changes the order of the results.
+
+        - name - Name descending.
+        - created_at - Created at descending. (default order) (A)
+        - updated_at - Updated at descending.
+        - post_count - Post count descending.
+        - custom - Help:Common URL parameters
+            - In order to use this order, search[id] must also be set with a list of comma-separated IDs.
+
+        Return json format:
+        ```
+        [
+            {
+                "id": 616177,
+                "created_at": "2026-03-11T01:45:55.135-04:00",
+                "name": "kazari4510_imas",
+                "updated_at": "2026-03-11T01:45:55.141-04:00",
+                "is_deleted": false,
+                "group_name": "",
+                "is_banned": false,
+                "other_names": [
+                    "かざり@"
+                ]
+            },
+            ...
+        ]
+        ```
+
+        获取在起始页码与结束页码范围内，指定搜索参数的艺术家列表；若 all_page 为 True，则获取当前查询参数下所有页码的艺术家列表
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+            start_page (int, optional): 查询起始页码. Defaults to 1.
+            end_page (int, optional): 查询结束页码. Defaults to 1.
+            all_page (bool, optional): 是否获取当前搜索参数下所有页码的艺术家列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
+
+        Note:
+            danbooru artists 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际艺术家数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/artists?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/artists.json?limit=1000&page=1001 网页中会返回：
+            ```
+            {
+                "success": false,
+                "error": "PaginationExtension::PaginationError",
+                "message": "You cannot go beyond page 1000.",
+                "backtrace": [
+                    "app/logical/pagination_extension.rb:54:in 'PaginationExtension#paginate'",
+                    "app/models/application_record.rb:18:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginate'",
+                    "app/models/application_record.rb:37:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginated_search'",
+                    "app/controllers/artists_controller.rb:9:in 'ArtistsController#index'",
+                    "app/logical/rack_server_timing.rb:19:in 'RackServerTiming#call'"
+                ]
+            }
+            ```
+
+        Yields:
+            AsyncIterable[list[dict] | None]: 若获取成功，则返回对应的艺术家内容列表；若获取失败，则返回 None
+        """
+        if query is None:
+            query = {
+                "search[order]": "created_at",
+            }
+        if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
+            limit = 1000
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
+            )
+
+        url = "/artists.json"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+        }
+        # 更新搜索参数
+        params.update(query)
+
+        # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
+        self.client.MAX_PAGE
+
+        # 获取当前搜索参数下所有页码的图集列表
+        if all_page:
+            max_page = await self.index_page(  # 根据最大 tags id 估算最大页码，实际的最大页码会小于等于该页码（因为弃用的 tags 会被删除）
+                limit=limit,
+                query=query,
+            )
+            logger.info(
+                f"Maximum page number is equal to {max_page} for {limit = }, {query = }"
+            )
+
+            if max_page > self.client.MAX_PAGE:
+                remain_page = max_page - self.client.MAX_PAGE
+                max_page = self.client.MAX_PAGE  # 限制最大页码不超过每次搜索的最大页数
+                logger.warning(
+                    f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+
+            async for res in self.client.concurrent_fetch_page(
+                url,
+                headers=headers,
+                params=params,
+                start_page=1,
+                end_page=max_page,
+                page_key="page",
+            ):
+                yield res
+
+        # 获取在起始页码与结束页码范围内，指定标题的图集列表
+        else:
+            if start_page > self.client.MAX_PAGE:
+                remain_page = start_page - self.client.MAX_PAGE
+                start_page = self.client.MAX_PAGE
+                logger.warning(
+                    f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+            if end_page > self.client.MAX_PAGE:
+                remain_page = end_page - self.client.MAX_PAGE
+                end_page = self.client.MAX_PAGE
+                logger.warning(
+                    f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+
+            async for res in self.client.concurrent_fetch_page(
+                url,
+                headers=headers,
+                params=params,
+                start_page=start_page,
+                end_page=end_page,
+                page_key="page",
+            ):
+                yield res
 
     def show(self):
         # TODO
@@ -1129,6 +1388,52 @@ class DanbooruArtists(DanbooruComponent):
     def unban(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
+
+    async def download(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+        start_page: int = 1,
+        end_page: int = 1,
+        all_page: bool = False,
+        overwrite: bool = False,
+    ) -> None:
+        """
+        下载在起始页码与结束页码范围内，指定搜索参数的艺术家列表；若 all_page 为 True，则获取当前查询参数下所有页码的艺术家列表
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+            start_page (int, optional): 查询起始页码. Defaults to 1.
+            end_page (int, optional): 查询结束页码. Defaults to 1.
+            all_page (bool, optional): 是否获取当前搜索参数下所有页码的艺术家列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
+        """
+        # 获取当前查询下所有页码的艺术家列表
+        async for i, artists in aenumerate(
+            self.index(
+                limit=limit,
+                query=query,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
+            )
+        ):
+            artists = pd.DataFrame(artists)
+            if artists.empty:
+                logger.info(f"All of the artists {i + 1} are empty.")
+                continue
+
+            # 下载艺术家
+            artists_directory = os.path.join(self.directory, "artists")  # 艺术家文件目录
+            for index, artist in artists.iterrows():
+                artists_filename = f"{artist['id']}.json"  # 艺术家文件名
+                await self.client.save_raws(
+                    artists.loc[[index]],
+                    directory=artists_directory,
+                    filename=artists_filename,
+                    overwrite=overwrite,
+                )
 
 
 class DanbooruComments(DanbooruComponent):
