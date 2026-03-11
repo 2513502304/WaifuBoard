@@ -1070,20 +1070,20 @@ class DanbooruTags(DanbooruComponent):
             )
         ):
             tags = pd.DataFrame(tags)
-
             if tags.empty:
                 logger.info(f"All of the tags {i + 1} are empty.")
                 continue
 
             # 下载帖子
             tags_directory = os.path.join(self.directory, "tags")  # 标签文件目录
-            tags_filename = f"{tags.at[i, 'id']}.json"  # 标签文件名
-            await self.client.save_raws(
-                tags,
-                directory=tags_directory,
-                filename=tags_filename,
-                overwrite=overwrite,
-            )
+            for index, tag in tags.iterrows():
+                tags_filename = f"{tag['id']}.json"  # 标签文件名
+                await self.client.save_raws(
+                    tags.loc[[index]],
+                    directory=tags_directory,
+                    filename=tags_filename,
+                    overwrite=overwrite,
+                )
 
 
 class DanbooruArtists(DanbooruComponent):
