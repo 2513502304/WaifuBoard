@@ -87,7 +87,7 @@ class DanbooruClient(Danbooru):
         self.tags = DanbooruTags(self)
         self.artists = DanbooruArtists(self)
         # self.comments = DanbooruComments(self)
-        # self.wiki_pages = DanbooruWikiPages(self)
+        self.wiki_pages = DanbooruWikiPages(self)
         # self.notes = DanbooruNotes(self)
         # self.users = DanbooruUsers(self)
         # self.forum_posts = DanbooruForumPosts(self)
@@ -149,7 +149,7 @@ class DanbooruPosts(DanbooruComponent):
             random (bool, optional): 在帖子查询下选择随机抽样。若设置为 True，则仅返回 1 页内容. Defaults to False.
 
         Returns:
-            int: html 分页器中的最大页码，实际的最大页码会大于等于该页码
+            int: html 分页器中的最大页码，实际的最大页码等于该页码
         """
         # 随机抽样，仅返回 1 页内容
         if random:
@@ -976,7 +976,7 @@ class DanbooruTags(DanbooruComponent):
 
         # 获取当前搜索参数下所有页码的图集列表
         if all_page:
-            max_page = await self.index_page(  # 根据最大 tags id 估算最大页码，实际的最大页码会小于等于该页码（因为弃用的 tags 会被删除）
+            max_page = await self.index_page(  # 获取 html 分页器中的最大页码
                 limit=limit,
                 query=query,
             )
@@ -1221,6 +1221,7 @@ class DanbooruArtists(DanbooruComponent):
         all_page: bool = False,
     ) -> AsyncIterable[list[dict] | None]:
         """
+        Index
 
         HTTP Method	    GET
         Base URL	    /artists.json
@@ -1359,7 +1360,7 @@ class DanbooruArtists(DanbooruComponent):
 
         # 获取当前搜索参数下所有页码的图集列表
         if all_page:
-            max_page = await self.index_page(  # 根据最大 tags id 估算最大页码，实际的最大页码会小于等于该页码（因为弃用的 tags 会被删除）
+            max_page = await self.index_page(  # 获取 html 分页器中的最大页码
                 limit=limit,
                 query=query,
             )
@@ -1528,7 +1529,9 @@ class DanbooruArtists(DanbooruComponent):
                 continue
 
             # 下载艺术家
-            artists_directory = os.path.join(self.directory, "artists")  # 艺术家文件目录
+            artists_directory = os.path.join(
+                self.directory, "artists"
+            )  # 艺术家文件目录
             for index, artist in artists.iterrows():
                 artists_filename = f"{artist['id']}.json"  # 艺术家文件名
                 await self.client.save_raws(
@@ -1580,23 +1583,324 @@ class DanbooruWikiPages(DanbooruComponent):
     def __init__(self, client: DanbooruClient):
         super().__init__(client)
 
-    def index(self):
-        # TODO
-        raise NotImplementedError("The method is not implemented")
+    async def index_page(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+    ) -> int:
+        """
+        使用定位 html 分页器的方式，获取指定搜索参数 wiki 的最大页码
 
-    def show(self):
-        # TODO
-        raise NotImplementedError("The method is not implemented")
+        Note:
+            danbooru wiki 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际 wiki 数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/wiki_pages?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/wiki_pages.json?limit=1000&page=1001 网页中会返回：
+            ```
+            {
+                "success": false,
+                "error": "PaginationExtension::PaginationError",
+                "message": "You cannot go beyond page 1000.",
+                "backtrace": [
+                    "app/logical/pagination_extension.rb:54:in 'PaginationExtension#paginate'",
+                    "app/models/application_record.rb:18:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginate'",
+                    "app/models/application_record.rb:37:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginated_search'",
+                    "app/controllers/wiki_pages_controller.rb:12:in 'WikiPagesController#index'",
+                    "app/logical/rack_server_timing.rb:19:in 'RackServerTiming#call'"
+                ]
+            }
+            ```
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+
+        Returns:
+            int: html 分页器中的最大页码，实际的最大页码等于该页码
+        """
+        if query is None:
+            query = {
+                "search[order]": "created_at",
+            }
+
+        url = "/wiki_pages"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+        }
+        # 更新搜索参数
+        params.update(query)
+
+        try:
+            response = await self.client.get(url, headers=headers, params=params)
+            # 解析 html 分页器中的最大页码
+            tree = etree.HTML(response.text)
+            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
+            #!若访问 pools/gallery 页面，则无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
+            #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
+            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
+            if pagination:  # 存在分页器，说明该页面至少有两页
+                return int(pagination[-2].xpath("./text()")[0])
+            else:  # 不存在分页器，说明该页面只有一页
+                return 1
+        except httpx.HTTPError as exc:
+            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+
+    async def index(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+        start_page: int = 1,
+        end_page: int = 1,
+        all_page: bool = False,
+    ) -> AsyncIterable[list[dict] | None]:
+        """
+        Index
+
+        HTTP Method	    GET
+        Base URL	    /wiki_pages.json
+        Type	        read request
+        Description	    The default order is updated at descending.
+
+        Search attributes
+
+        The following are the base fields along with their associated type. Check the syntax pages for all of the available variations.
+
+        Number syntax
+        - id
+        - created_at
+        - updated_at
+
+        String syntax
+        - title
+
+        Text syntax
+        - body
+
+        Array syntax
+        - other_names
+
+        Boolean syntax
+        - is_deleted
+        - is_locked
+
+        Chaining syntax
+        - tag
+        - artist
+        - dtext_links
+
+        Special search parameters
+
+        The following are additional search fields.
+
+        - title_normalize - Normalized case-insensitive wildcard searching on the title text field.
+        - other_names_match - Case-insensitive wildcard search on any of the other names.
+        - linked_to - Wiki pages that have dtext links to the given wiki page.
+            - The parameter must use the same format as the wiki title.
+            - I.e. all lowercase and underscores instead of spaces.
+        - not_linked_to - Wiki pages that don't have dtext links to the given wiki page.
+            - Needs the same format as linked_to.
+        - hide_deleted - Hides all deleted wikis (Boolean syntax).
+            - Shortcut for search[is_deleted]=false
+        - other_names_present - Shows wikis based on the presence of other names (Boolean syntax).
+            - Shortcut for search[other_name_count]=>0 (TRUE) and search[other_name_count]=0 (FALSE)
+        - has_embedded_media - Wiki pages that have embedded media on them (Boolean syntax).
+
+        Search order
+
+        Using the search parameter order with one of the following values changes the order of the results.
+
+        - title - Title descending.
+        - post_count - Post count descending.
+        - created_at - Orders by creation time. (default order) (A)
+        - custom - Help:Common URL parameters
+            - In order to use this order, search[id] must also be set with a list of comma-separated IDs.
+
+        Return json format:
+        ```
+        [
+            {
+                "id": 4540,
+                "created_at": "2007-01-13T19:36:49.000-05:00",
+                "updated_at": "2026-02-13T18:30:02.814-05:00",
+                "title": "tag_group:posture",
+                "body": "[See [[tag groups]].]\r\n\r\n[expand=Table of Contents]\r\n* 1. \"Basic positions\":#dtext-basic\r\n* 2. \"Movement of the body\":#dtext-move\r\n* 3. \"Other postures potentially involving the whole body\":#dtext-whole\r\n* 4. \"Other rest points of the body\":#dtext-rest\r\n* 5. \"Posture of the head\":#dtext-head\r\n* 6. \"Torso inclination\":#dtext-torso\r\n* 7. \"Arms\":#dtext-arms\r\n** 7.1 \"Basic arm position\":#dtext-basicarm\r\n** 7.2 \"More specific arm position\":#dtext-specificarm\r\n** 7.3 \"Hand position\":#dtext-hand\r\n** 7.4 \"Hands touching each other (one or more characters)\":#dtext-hands\r\n* 8. \"Legs\":#dtext-legs\r\n** 8.1 \"Leg location\":#dtext-leg\r\n** 8.2 \"Knee location\":#dtext-knee\r\n** 8.3 \"Foot position\":#dtext-foot\r\n* 9. \"Posture of at least two characters\":#dtext-two\r\n* 10. \"Posture of at least three characters\":#dtext-three\r\n* 11 \"Hugging\":#dtext-hug\r\n** 11.1 \"Hugging doable by one or more characters\":#dtext-hugone\r\n** 11.2 \"Hugging doable by two or more characters\":#dtext-hugtwo\r\n* 12. \"Carrying someone\":#dtext-carry\r\n* 13. \"Poses\":#dtext-poses\r\n** 13.1 \"Signature poses\":#dtext-signature\r\n* 14. \"See Also\":#dtext-also\r\n[/expand]\r\n\r\nExisting tags describing one person's posture.\r\n\r\nh4#basic. Basic positions\r\n\r\n* [[Kneeling]]\r\n** [[On one knee]]\r\n* [[Lying]]\r\n** [[Crossed legs]]\r\n** [[Fetal position]]\r\n** [[On back]]\r\n** [[On side]]\r\n** [[On stomach]]\r\n* [[Sitting]]\r\n** [[Butterfly sitting]]\r\n** [[Crossed legs]]\r\n*** [[Figure four sitting]]\r\n** [[Indian style]]\r\n*** [[Lotus position]]\r\n** [[Hugging own legs]]\r\n** [[Reclining]]\r\n** [[Seiza]]\r\n** [[Sitting on person]]\r\n*** [[Sitting on head]]\r\n*** [[Sitting on lap]]\r\n*** [[Shoulder carry]]\r\n*** [[Human chair]]\r\n** [[Straddling]]\r\n*** [[Thigh straddling]]\r\n*** [[Upright straddle]]\r\n** [[Wariza]]\r\n** [[Yokozuwari]]\r\n* [[Standing]]\r\n** [[Balancing]]\r\n** [[Crossed legs]]\r\n** [[Legs apart]]\r\n** [[Standing on one leg]]\r\n\r\nh4#move. Movement of the body\r\n\r\n* [[Balancing]]\r\n* [[Crawling]]\r\n* [[Idle animation]]\r\n* [[Midair]]\r\n** [[Falling]]\r\n** [[Floating]]\r\n** [[Flying]]\r\n** [[Jumping]]\r\n*** [[Hopping]]\r\n*** [[Pouncing]]\r\n* [[Running]]\r\n* [[Walking]]\r\n** [[Walk cycle]]\r\n** [[Walking on wall]]\r\n\r\nh4#whole. Other postures potentially involving the whole body\r\n\r\n* [[All fours]]\r\n** [[Top-down bottom-up]]\r\n** [[Prostration]]\r\n** [[Bear position]]\r\n* [[Bowlegged pose]]\r\n* [[Chest stand]]\r\n* [[Chest stand handstand]]\r\n* [[Triplefold]]\r\n* [[Ruppelbend]]\r\n* [[Quadfold]]\r\n* [[Cowering]]\r\n* [[Crucifixion]]\r\n* [[Faceplant]]\r\n** [[Full scorpion]]\r\n* [[Fighting stance]]\r\n** [[Battoujutsu stance]]\r\n* [[Spread eagle position]]\r\n* [[Squatting]]\r\n* [[Stretching]]\r\n* [[Superhero landing]]\r\n* [[Upside-down]]\r\n** [[Handstand]]\r\n** [[Headstand]]\r\n* [[Yoga]]\r\n** [[Scorpion pose]]\r\n** [[revolved head-to-knee pose]] \r\n\r\nh4#rest. Other rest points of the body\r\n\r\n* [[Arm support]]\r\n* [[Head rest]]\r\n\r\nh4#head. Posture of the head\r\n\r\n* See [[tag group:eyes tags]] for the direction of a character's gaze, including [[looking at viewer]], [[looking to the side]], [[looking afar]], etc.\r\n* [[Head down]]\r\n* [[Head tilt]]\r\n* [[Head back]]\r\n\r\nh4#torso. Torso inclination\r\n\r\n* [[Arched back]] — Middle of spine pushed forwards\r\n* [[Bent back]] — Middle of spine pushed backwards\r\n* [[Bent over]]\r\n* [[Leaning back]]\r\n* [[Leaning forward]]\r\n* [[Slouching]]\r\n* [[Sway back]]\r\n* [[Twisted torso]]\r\n\r\nh4#arms. Arms\r\nSee also \"Poses\":[#dtext-poses] section.\r\n\r\nh6#basicarm. Basic arm position\r\n\r\n* [[Arm behind back]] / [[Arms behind back]]\r\n* [[Arm up]]\r\n** [[Arm behind head]]\r\n** See [[tag group:gestures]] for various gestures involving one arm up (including [[akanbe]], [[salute]], [[shushing]], [[v over eye]], [[waving]], etc.)\r\n** [[Victory pose]]\r\n* [[Arms up]]\r\n** [[\\o/]]\r\n** [[Arms behind head]]\r\n** See [[tag group:gestures]] for various gestures involving two arms up (including [[carry me]], [[heart hands]], [[finger frame]], [[horns pose]], etc.)\r\n* [[Outstretched arm]] / [[Outstretched arms]]\r\n* [[Spread arms]]\r\n* [[Arm at side]] / [[Arms at sides]]\r\n\r\nh6#specificarm. More specific arm position\r\n\r\n* [[Airplane arms]]\r\n* [[Crossed arms]]\r\n* [[Flexing]]\r\n* [[Praise the sun]]\r\n* [[Reaching]]\r\n* [[Shrugging]]\r\n* [[T-pose]]\r\n* [[A-pose]]\r\n* [[V arms]]\r\n* [[W arms]]\r\n\r\nh6#hand. Hand position\r\n\r\n* [[Stroking own chin]]\r\n* [[Outstretched hand]]\r\n* See [[tag group:hands]] for the location of the hand, and things touched by a hand (includes [[hand on own ear]], [[hand on own ass]], [[hand in pocket]], etc.)\r\n* See [[tag group:gestures]] for various gestures involving one or both hands.\r\n* [[V]]\r\n\r\nh6#hands. Hands touching each other (one or more characters)\r\n\r\n* [[Interlocked fingers]]\r\n* [[Own hands clasped]]\r\n* [[Own hands together]]\r\n* [[Star hands]]\r\n\r\nh4#hips. Hips\r\n* [[Contrapposto]]\r\n* [[Sway back]]\r\n\r\nh4#legs. Legs\r\n\r\nh6#leg. Leg location\r\n\r\n* [[Crossed ankles]]\r\n* [[Folded]]\r\n* [[Leg up]]\r\n* [[Legs up]]\r\n** [[Knees to chest]]\r\n** [[Legs over head]]\r\n* [[Leg lift]]\r\n* [[Outstretched leg]]\r\n* [[Pin legs]]\r\n* [[Split]]\r\n** [[Pigeon pose]]\r\n** [[Standing split]]\r\n* [[Spread legs]]\r\n* [[Watson cross]] \r\n* [[Uneven footing]]\r\n\r\nh6#knee. Knee location\r\n\r\n* [[Knees apart feet together]]\r\n* [[Knees together feet apart]] \r\n* [[Knee up]] \r\n* [[Knees up]]\r\n\r\nh6#foot. Foot position\r\n\r\n* [[Dorsiflexion]]\r\n* [[Pigeon-toed]]\r\n* [[Plantar flexion]]\r\n* [[Toe scrunch]] \r\n* [[Tiptoes]]\r\n** [[Tiptoe kiss]]\r\n\r\nh4#two. Posture of at least two characters\r\n\r\n* [[Ass-to-ass]]\r\n* [[Back-to-back]]\r\n* [[Belly-to-belly]]\r\n* [[Cheek-to-breast]]\r\n* [[Cheek-to-cheek]]\r\n* [[Eye contact]]\r\n* [[Face-to-face]]\r\n* [[Forehead-to-forehead]]\r\n* [[Head on chest]]\r\n* [[Heads together]]\r\n* [[Holding hands]]\r\n* [[Leg lock]]\r\n* [[Locked arms]]\r\n* [[Over the knee]]\r\n* [[Nipple-to-nipple]]\r\n* [[Noses touching]]\r\n* [[Shoulder-to-shoulder]]\r\n* [[Tail lock]]\r\n\r\nh4#three. Posture of at least three characters\r\n\r\n* [[Circle formation]]\r\n* [[Group hug]]\r\n\r\nh4#hug. Hugging\r\n\r\n* [[Hug]]\r\n\r\nh6#hugone. Hugging doable by one or more characters\r\n\r\n* [[Hugging own legs]]\r\n* [[Hugging object]]\r\n* [[Hugging tail]]\r\n* [[Wing hug]]\r\n\r\nh6#hugtwo. Hugging doable by two or more characters\r\n\r\n* [[Arm hug]]\r\n* [[Hug from behind]]\r\n* [[Waist hug]]\r\n\r\nh4#carry. Carrying someone\r\n\r\n* [[Baby carry]]\r\n* [[Carrying]]\r\n** [[Carried breast rest]]\r\n** [[Carrying over shoulder]]\r\n** [[Carrying under arm]]\r\n** [[Child carry]]\r\n** [[Fireman's carry]]\r\n** [[Piggyback]]\r\n** [[Princess carry]]\r\n** [[Shoulder carry]]\r\n** [[Sitting on shoulder]]\r\n** [[Standing on shoulder]]\r\n\r\nh4#poses. Poses\r\n\r\n* Animal pose\r\n** [[Rabbit pose]]\r\n** [[Horns pose]]\r\n** [[Paw pose]]\r\n** [[Claw pose]]\r\n* [[Archer pose]]\r\n* [[Bras d'honneur]]\r\n* [[Body bridge]]\r\n* [[Contrapposto]]\r\n* [[Dojikko pose]]\r\n* [[Ghost pose]]\r\n* [[Inugami-ke no Ichizoku pose]] — Upside-down with only legs visible\r\n* [[Letter pose]]\r\n* [[Ojou-sama pose]]\r\n* [[Saboten pose]]\r\n* [[Symmetrical hand pose]]\r\n* [[Victory pose]]\r\n* [[Villain pose]]\r\n* [[Zombie pose]]\r\n\r\nh5#signature. Signature poses\r\n\r\n* [[Charizard pose]] \r\n* [[Gendou pose]] — Fingers intertwined above the mouth\r\n* [[Henshin pose]]\r\n* [[JoJo pose]]\r\n** [[Dio Brando's pose]] — Menacing, mostly facing away, but glancing at the viewer\r\n** [[Giorno Giovanna's pose]] — Legs apart, one arm doing a half-[[Superman exposure]]\r\n** [[Jonathan Joestar's pose]] — One hand in front of the face, one at the side facing back\r\n** [[Kujo Jotaro's pose]] — Pointing disdainfully\r\n* [[Kongou pose]] — Confident stance with an outstretched hand\r\n* [[Kujou Karen pose]] — Double finger guns with one arm bent\r\n* [[Z-Move trainer pose]] \r\n\r\nh4#also. See Also\r\n\r\n* [[Tag groups]]\r\n* [[Tag group:Gestures]]\r\n* [[Tag group:Sexual positions]]\r\n* [[List of poses]]\r\n* {{pose|Pose tag search}}",
+                "is_locked": false,
+                "other_names": [],
+                "is_deleted": false
+            }
+        ]
+        ```
+
+        获取在起始页码与结束页码范围内，指定搜索参数的 wiki 列表；若 all_page 为 True，则获取当前搜索参数下所有页码的 wiki 列表
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+            start_page (int, optional): 查询起始页码. Defaults to 1.
+            end_page (int, optional): 查询结束页码. Defaults to 1.
+            all_page (bool, optional): 是否获取当前搜索参数下所有页码的 wiki 列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
+
+        Note:
+            danbooru wiki 页面展示策略受 limit 参数影响，会自动根据 limit 参数与实际 wiki 数量调整 html 分页器中的最大页码
+            page 受账号等级影响 (see help:users)，对普通无账户或会员用户，每次搜索的最大页数为 1000
+            否则在 https://danbooru.donmai.us/wiki_pages?limit=1000&page=1001 网页中会弹出 Search Error. You cannot go beyond page 1000. Try narrowing your search terms, or upgrade your account to go beyond page 1000. 提示
+            在 https://danbooru.donmai.us/wiki_pages.json?limit=1000&page=1001 网页中会返回：
+            ```
+            {
+                "success": false,
+                "error": "PaginationExtension::PaginationError",
+                "message": "You cannot go beyond page 1000.",
+                "backtrace": [
+                    "app/logical/pagination_extension.rb:54:in 'PaginationExtension#paginate'",
+                    "app/models/application_record.rb:18:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginate'",
+                    "app/models/application_record.rb:37:in 'ApplicationRecord::PaginationMethods::ClassMethods#paginated_search'",
+                    "app/controllers/wiki_pages_controller.rb:12:in 'WikiPagesController#index'",
+                    "app/logical/rack_server_timing.rb:19:in 'RackServerTiming#call'"
+                ]
+            }
+            ```
+
+        Yields:
+            AsyncIterable[list[dict] | None]: 若获取成功，则返回对应的 wiki 内容列表；若获取失败，则返回 None
+        """
+        if query is None:
+            query = {
+                "search[order]": "created_at",
+            }
+        if limit > 1000:  # 事实上，超过该值时，返回的结果会被截断到该值
+            limit = 1000
+            logger.warning(
+                f"Limit is set to {limit}, Because it exceeds the maximum allowed value of 1000."
+            )
+
+        url = "/wiki_pages.json"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {
+            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
+            "page": 1,  # 查询页码
+        }
+        # 更新搜索参数
+        params.update(query)
+
+        # TODO: 添加检验用户账号等级逻辑，以便调整每次搜索的最大页数
+        self.client.MAX_PAGE
+
+        # 获取当前搜索参数下所有页码的图集列表
+        if all_page:
+            max_page = await self.index_page(  # 获取 html 分页器中的最大页码
+                limit=limit,
+                query=query,
+            )
+            logger.info(
+                f"Maximum page number is equal to {max_page} for {limit = }, {query = }"
+            )
+
+            if max_page > self.client.MAX_PAGE:
+                remain_page = max_page - self.client.MAX_PAGE
+                max_page = self.client.MAX_PAGE  # 限制最大页码不超过每次搜索的最大页数
+                logger.warning(
+                    f"Maximum page number is set to {max_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+
+            async for res in self.client.concurrent_fetch_page(
+                url,
+                headers=headers,
+                params=params,
+                start_page=1,
+                end_page=max_page,
+                page_key="page",
+            ):
+                yield res
+
+        # 获取在起始页码与结束页码范围内，指定标题的图集列表
+        else:
+            if start_page > self.client.MAX_PAGE:
+                remain_page = start_page - self.client.MAX_PAGE
+                start_page = self.client.MAX_PAGE
+                logger.warning(
+                    f"Start page is set to {start_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+            if end_page > self.client.MAX_PAGE:
+                remain_page = end_page - self.client.MAX_PAGE
+                end_page = self.client.MAX_PAGE
+                logger.warning(
+                    f"End page is set to {end_page} for {limit = }, {query = }, because {self.client.MAX_PAGE + remain_page} exceeds {self.client.MAX_PAGE}"
+                )
+
+            async for res in self.client.concurrent_fetch_page(
+                url,
+                headers=headers,
+                params=params,
+                start_page=start_page,
+                end_page=end_page,
+                page_key="page",
+            ):
+                yield res
+
+    async def show(
+        self,
+        id: int,
+    ) -> list[dict] | None:
+        """
+        Show
+
+        HTTP Method	    GET
+        Base URL	    /wiki_pages/$id.json
+        Type	        read request
+        Description	    $id is the wiki page ID or title.
+
+        Return json format:
+        ```
+        {
+            "id": 4540,
+            "created_at": "2007-01-13T19:36:49.000-05:00",
+            "updated_at": "2026-02-13T18:30:02.814-05:00",
+            "title": "tag_group:posture",
+            "body": "[See [[tag groups]].]\r\n\r\n[expand=Table of Contents]\r\n* 1. \"Basic positions\":#dtext-basic\r\n* 2. \"Movement of the body\":#dtext-move\r\n* 3. \"Other postures potentially involving the whole body\":#dtext-whole\r\n* 4. \"Other rest points of the body\":#dtext-rest\r\n* 5. \"Posture of the head\":#dtext-head\r\n* 6. \"Torso inclination\":#dtext-torso\r\n* 7. \"Arms\":#dtext-arms\r\n** 7.1 \"Basic arm position\":#dtext-basicarm\r\n** 7.2 \"More specific arm position\":#dtext-specificarm\r\n** 7.3 \"Hand position\":#dtext-hand\r\n** 7.4 \"Hands touching each other (one or more characters)\":#dtext-hands\r\n* 8. \"Legs\":#dtext-legs\r\n** 8.1 \"Leg location\":#dtext-leg\r\n** 8.2 \"Knee location\":#dtext-knee\r\n** 8.3 \"Foot position\":#dtext-foot\r\n* 9. \"Posture of at least two characters\":#dtext-two\r\n* 10. \"Posture of at least three characters\":#dtext-three\r\n* 11 \"Hugging\":#dtext-hug\r\n** 11.1 \"Hugging doable by one or more characters\":#dtext-hugone\r\n** 11.2 \"Hugging doable by two or more characters\":#dtext-hugtwo\r\n* 12. \"Carrying someone\":#dtext-carry\r\n* 13. \"Poses\":#dtext-poses\r\n** 13.1 \"Signature poses\":#dtext-signature\r\n* 14. \"See Also\":#dtext-also\r\n[/expand]\r\n\r\nExisting tags describing one person's posture.\r\n\r\nh4#basic. Basic positions\r\n\r\n* [[Kneeling]]\r\n** [[On one knee]]\r\n* [[Lying]]\r\n** [[Crossed legs]]\r\n** [[Fetal position]]\r\n** [[On back]]\r\n** [[On side]]\r\n** [[On stomach]]\r\n* [[Sitting]]\r\n** [[Butterfly sitting]]\r\n** [[Crossed legs]]\r\n*** [[Figure four sitting]]\r\n** [[Indian style]]\r\n*** [[Lotus position]]\r\n** [[Hugging own legs]]\r\n** [[Reclining]]\r\n** [[Seiza]]\r\n** [[Sitting on person]]\r\n*** [[Sitting on head]]\r\n*** [[Sitting on lap]]\r\n*** [[Shoulder carry]]\r\n*** [[Human chair]]\r\n** [[Straddling]]\r\n*** [[Thigh straddling]]\r\n*** [[Upright straddle]]\r\n** [[Wariza]]\r\n** [[Yokozuwari]]\r\n* [[Standing]]\r\n** [[Balancing]]\r\n** [[Crossed legs]]\r\n** [[Legs apart]]\r\n** [[Standing on one leg]]\r\n\r\nh4#move. Movement of the body\r\n\r\n* [[Balancing]]\r\n* [[Crawling]]\r\n* [[Idle animation]]\r\n* [[Midair]]\r\n** [[Falling]]\r\n** [[Floating]]\r\n** [[Flying]]\r\n** [[Jumping]]\r\n*** [[Hopping]]\r\n*** [[Pouncing]]\r\n* [[Running]]\r\n* [[Walking]]\r\n** [[Walk cycle]]\r\n** [[Walking on wall]]\r\n\r\nh4#whole. Other postures potentially involving the whole body\r\n\r\n* [[All fours]]\r\n** [[Top-down bottom-up]]\r\n** [[Prostration]]\r\n** [[Bear position]]\r\n* [[Bowlegged pose]]\r\n* [[Chest stand]]\r\n* [[Chest stand handstand]]\r\n* [[Triplefold]]\r\n* [[Ruppelbend]]\r\n* [[Quadfold]]\r\n* [[Cowering]]\r\n* [[Crucifixion]]\r\n* [[Faceplant]]\r\n** [[Full scorpion]]\r\n* [[Fighting stance]]\r\n** [[Battoujutsu stance]]\r\n* [[Spread eagle position]]\r\n* [[Squatting]]\r\n* [[Stretching]]\r\n* [[Superhero landing]]\r\n* [[Upside-down]]\r\n** [[Handstand]]\r\n** [[Headstand]]\r\n* [[Yoga]]\r\n** [[Scorpion pose]]\r\n** [[revolved head-to-knee pose]] \r\n\r\nh4#rest. Other rest points of the body\r\n\r\n* [[Arm support]]\r\n* [[Head rest]]\r\n\r\nh4#head. Posture of the head\r\n\r\n* See [[tag group:eyes tags]] for the direction of a character's gaze, including [[looking at viewer]], [[looking to the side]], [[looking afar]], etc.\r\n* [[Head down]]\r\n* [[Head tilt]]\r\n* [[Head back]]\r\n\r\nh4#torso. Torso inclination\r\n\r\n* [[Arched back]] — Middle of spine pushed forwards\r\n* [[Bent back]] — Middle of spine pushed backwards\r\n* [[Bent over]]\r\n* [[Leaning back]]\r\n* [[Leaning forward]]\r\n* [[Slouching]]\r\n* [[Sway back]]\r\n* [[Twisted torso]]\r\n\r\nh4#arms. Arms\r\nSee also \"Poses\":[#dtext-poses] section.\r\n\r\nh6#basicarm. Basic arm position\r\n\r\n* [[Arm behind back]] / [[Arms behind back]]\r\n* [[Arm up]]\r\n** [[Arm behind head]]\r\n** See [[tag group:gestures]] for various gestures involving one arm up (including [[akanbe]], [[salute]], [[shushing]], [[v over eye]], [[waving]], etc.)\r\n** [[Victory pose]]\r\n* [[Arms up]]\r\n** [[\\o/]]\r\n** [[Arms behind head]]\r\n** See [[tag group:gestures]] for various gestures involving two arms up (including [[carry me]], [[heart hands]], [[finger frame]], [[horns pose]], etc.)\r\n* [[Outstretched arm]] / [[Outstretched arms]]\r\n* [[Spread arms]]\r\n* [[Arm at side]] / [[Arms at sides]]\r\n\r\nh6#specificarm. More specific arm position\r\n\r\n* [[Airplane arms]]\r\n* [[Crossed arms]]\r\n* [[Flexing]]\r\n* [[Praise the sun]]\r\n* [[Reaching]]\r\n* [[Shrugging]]\r\n* [[T-pose]]\r\n* [[A-pose]]\r\n* [[V arms]]\r\n* [[W arms]]\r\n\r\nh6#hand. Hand position\r\n\r\n* [[Stroking own chin]]\r\n* [[Outstretched hand]]\r\n* See [[tag group:hands]] for the location of the hand, and things touched by a hand (includes [[hand on own ear]], [[hand on own ass]], [[hand in pocket]], etc.)\r\n* See [[tag group:gestures]] for various gestures involving one or both hands.\r\n* [[V]]\r\n\r\nh6#hands. Hands touching each other (one or more characters)\r\n\r\n* [[Interlocked fingers]]\r\n* [[Own hands clasped]]\r\n* [[Own hands together]]\r\n* [[Star hands]]\r\n\r\nh4#hips. Hips\r\n* [[Contrapposto]]\r\n* [[Sway back]]\r\n\r\nh4#legs. Legs\r\n\r\nh6#leg. Leg location\r\n\r\n* [[Crossed ankles]]\r\n* [[Folded]]\r\n* [[Leg up]]\r\n* [[Legs up]]\r\n** [[Knees to chest]]\r\n** [[Legs over head]]\r\n* [[Leg lift]]\r\n* [[Outstretched leg]]\r\n* [[Pin legs]]\r\n* [[Split]]\r\n** [[Pigeon pose]]\r\n** [[Standing split]]\r\n* [[Spread legs]]\r\n* [[Watson cross]] \r\n* [[Uneven footing]]\r\n\r\nh6#knee. Knee location\r\n\r\n* [[Knees apart feet together]]\r\n* [[Knees together feet apart]] \r\n* [[Knee up]] \r\n* [[Knees up]]\r\n\r\nh6#foot. Foot position\r\n\r\n* [[Dorsiflexion]]\r\n* [[Pigeon-toed]]\r\n* [[Plantar flexion]]\r\n* [[Toe scrunch]] \r\n* [[Tiptoes]]\r\n** [[Tiptoe kiss]]\r\n\r\nh4#two. Posture of at least two characters\r\n\r\n* [[Ass-to-ass]]\r\n* [[Back-to-back]]\r\n* [[Belly-to-belly]]\r\n* [[Cheek-to-breast]]\r\n* [[Cheek-to-cheek]]\r\n* [[Eye contact]]\r\n* [[Face-to-face]]\r\n* [[Forehead-to-forehead]]\r\n* [[Head on chest]]\r\n* [[Heads together]]\r\n* [[Holding hands]]\r\n* [[Leg lock]]\r\n* [[Locked arms]]\r\n* [[Over the knee]]\r\n* [[Nipple-to-nipple]]\r\n* [[Noses touching]]\r\n* [[Shoulder-to-shoulder]]\r\n* [[Tail lock]]\r\n\r\nh4#three. Posture of at least three characters\r\n\r\n* [[Circle formation]]\r\n* [[Group hug]]\r\n\r\nh4#hug. Hugging\r\n\r\n* [[Hug]]\r\n\r\nh6#hugone. Hugging doable by one or more characters\r\n\r\n* [[Hugging own legs]]\r\n* [[Hugging object]]\r\n* [[Hugging tail]]\r\n* [[Wing hug]]\r\n\r\nh6#hugtwo. Hugging doable by two or more characters\r\n\r\n* [[Arm hug]]\r\n* [[Hug from behind]]\r\n* [[Waist hug]]\r\n\r\nh4#carry. Carrying someone\r\n\r\n* [[Baby carry]]\r\n* [[Carrying]]\r\n** [[Carried breast rest]]\r\n** [[Carrying over shoulder]]\r\n** [[Carrying under arm]]\r\n** [[Child carry]]\r\n** [[Fireman's carry]]\r\n** [[Piggyback]]\r\n** [[Princess carry]]\r\n** [[Shoulder carry]]\r\n** [[Sitting on shoulder]]\r\n** [[Standing on shoulder]]\r\n\r\nh4#poses. Poses\r\n\r\n* Animal pose\r\n** [[Rabbit pose]]\r\n** [[Horns pose]]\r\n** [[Paw pose]]\r\n** [[Claw pose]]\r\n* [[Archer pose]]\r\n* [[Bras d'honneur]]\r\n* [[Body bridge]]\r\n* [[Contrapposto]]\r\n* [[Dojikko pose]]\r\n* [[Ghost pose]]\r\n* [[Inugami-ke no Ichizoku pose]] — Upside-down with only legs visible\r\n* [[Letter pose]]\r\n* [[Ojou-sama pose]]\r\n* [[Saboten pose]]\r\n* [[Symmetrical hand pose]]\r\n* [[Victory pose]]\r\n* [[Villain pose]]\r\n* [[Zombie pose]]\r\n\r\nh5#signature. Signature poses\r\n\r\n* [[Charizard pose]] \r\n* [[Gendou pose]] — Fingers intertwined above the mouth\r\n* [[Henshin pose]]\r\n* [[JoJo pose]]\r\n** [[Dio Brando's pose]] — Menacing, mostly facing away, but glancing at the viewer\r\n** [[Giorno Giovanna's pose]] — Legs apart, one arm doing a half-[[Superman exposure]]\r\n** [[Jonathan Joestar's pose]] — One hand in front of the face, one at the side facing back\r\n** [[Kujo Jotaro's pose]] — Pointing disdainfully\r\n* [[Kongou pose]] — Confident stance with an outstretched hand\r\n* [[Kujou Karen pose]] — Double finger guns with one arm bent\r\n* [[Z-Move trainer pose]] \r\n\r\nh4#also. See Also\r\n\r\n* [[Tag groups]]\r\n* [[Tag group:Gestures]]\r\n* [[Tag group:Sexual positions]]\r\n* [[List of poses]]\r\n* {{pose|Pose tag search}}",
+            "is_locked": false,
+            "other_names": [],
+            "is_deleted": false
+        }
+        ```
+
+        获取指定 id 的 wiki 列表
+
+        Args:
+            id (int): wiki id
+
+        Note:
+            该方法与指定 search[id]/search[name] 参数的 index 方法类似，**但是**返回的结果列表仅包含一个 wiki 页面
+
+        Returns:
+            list[dict] | None: 若获取成功，则返回对应的 wiki 内容列表；若获取失败，则返回 None
+        """
+        url = f"/wiki_pages/{id}.json"
+        headers = {
+            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
+        }
+        params = {}
+
+        # 结果列表
+        result: list[
+            dict
+        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+            url,
+            headers=headers,
+            params=params,
+        )
+        return result
 
     def create(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
     def update(self):
-        # TODO
-        raise NotImplementedError("The method is not implemented")
-
-    def show(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -1607,6 +1911,52 @@ class DanbooruWikiPages(DanbooruComponent):
     def revert(self):
         # TODO
         raise NotImplementedError("The method is not implemented")
+
+    async def download(
+        self,
+        limit: int = 20,
+        query: dict | None = None,
+        start_page: int = 1,
+        end_page: int = 1,
+        all_page: bool = False,
+        overwrite: bool = False,
+    ) -> None:
+        """
+        下载在起始页码与结束页码范围内，指定搜索参数的 wiki 列表；若 all_page 为 True，则获取当前搜索参数下所有页码的 wiki 列表
+
+        Args:
+            limit (int, optional): 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000. Defaults to 20.
+            query (dict | None, optional): 搜索参数，必须遵循 danbooru 中定义的语法，参见 [help:common url parameters](https://danbooru.donmai.us/wiki_pages/help:common_url_parameters) 以及 [api:pools](https://danbooru.donmai.us/wiki_pages/api%3Apools). Defaults to None. 表示搜索全站
+            start_page (int, optional): 查询起始页码. Defaults to 1.
+            end_page (int, optional): 查询结束页码. Defaults to 1.
+            all_page (bool, optional): 是否获取当前搜索参数下所有页码的 wiki 列表，若为 True，则忽略 start_page 与 end_page 参数. Defaults to False.
+            overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
+        """
+        # 获取当前查询下所有页码的 wiki 列表
+        async for i, wikis in aenumerate(
+            self.index(
+                limit=limit,
+                query=query,
+                start_page=start_page,
+                end_page=end_page,
+                all_page=all_page,
+            )
+        ):
+            wikis = pd.DataFrame(wikis)
+            if wikis.empty:
+                logger.info(f"All of the wikis {i + 1} are empty.")
+                continue
+
+            # 下载 wiki
+            wiki_directory = os.path.join(self.directory, "wikis")  # wiki 文件目录
+            for index, wiki in wikis.iterrows():
+                wiki_filename = f"{wiki['id']}.json"  # wiki 文件名
+                await self.client.save_raws(
+                    wikis.loc[[index]],
+                    directory=wiki_directory,
+                    filename=wiki_filename,
+                    overwrite=overwrite,
+                )
 
 
 class DanbooruNotes(DanbooruComponent):
@@ -2087,7 +2437,9 @@ class DanbooruPools(DanbooruComponent):
                     self.client.posts.show(id=id) for id in ids
                 ]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
                 # 并发获取图集 ID 下所有帖子
-                task_results: list[list[dict] | None] = await self.client.batch_process_tasks(tasks)
+                task_results: list[
+                    list[dict] | None
+                ] = await self.client.batch_process_tasks(tasks)
                 # 合并所有帖子
                 posts = pd.DataFrame(
                     [post for res in task_results for post in res if res is not None]
