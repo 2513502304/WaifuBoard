@@ -33,8 +33,13 @@ keywords = [
     "spider",
     "ai",
     "imageboard",
+    "danbooru",
+    "safebooru",
+    "yandere",
     "images",
+    "pictures",
     "tags",
+    "prompt",
     "metadata",
 ]
 requires-python = ">=3.9"

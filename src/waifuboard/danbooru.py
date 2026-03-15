@@ -2087,12 +2087,10 @@ class DanbooruPools(DanbooruComponent):
                     self.client.posts.show(id=id) for id in ids
                 ]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
                 # 并发获取图集 ID 下所有帖子
-                task_result: list[list[dict] | None] = await asyncio.gather(
-                    *tasks, return_exceptions=True
-                )
+                task_results: list[list[dict] | None] = await self.client.batch_process_tasks(tasks)
                 # 合并所有帖子
                 posts = pd.DataFrame(
-                    [post for task in task_result for post in task if task is not None]
+                    [post for res in task_results for post in res if res is not None]
                 )
 
                 # 下载帖子

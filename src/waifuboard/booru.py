@@ -10,7 +10,7 @@ import ssl
 import sys
 import time
 import typing
-from typing import Any, Literal, Callable, Iterable, AsyncIterable
+from typing import Any, Literal, Callable, Coroutine, Iterable, AsyncIterable
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
@@ -653,6 +653,29 @@ class Booru:
             **kwargs,
         )
 
+    async def stream_process_tasks(
+        self,
+        tasks: list[Coroutine],
+    ) -> AsyncIterable[Any]:
+        for t in asyncio.as_completed(tasks):
+            try:
+                result = await t
+                yield result
+            except Exception as exc:
+                logger.error(f"{exc.__class__.__name__}: {exc}")
+                yield None
+
+    async def batch_process_tasks(
+        self,
+        tasks: list[Coroutine],
+    ) -> list[Any]:
+        results: list = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.error(f"{res.__class__.__name__}: {res}")
+                results[i] = None
+        return results
+
     async def download_file(
         self,
         url: str,
@@ -731,13 +754,8 @@ class Booru:
             for url in urls
         ]
         # 并发执行下载任务
-        for t in asyncio.as_completed(tasks):
-            try:
-                result = await t
-                yield result
-            except Exception as exc:
-                logger.error(f"{exc.__class__.__name__}: {exc}")
-                yield None
+        async for res in self.stream_process_tasks(tasks):
+            yield res
 
     async def save_raws(
         self,
@@ -916,13 +934,8 @@ class Booru:
                 )
             )
         # 并发执行下载任务
-        for t in asyncio.as_completed(tasks):
-            try:
-                result = await t
-                yield result
-            except Exception as exc:
-                logger.error(f"{exc.__class__.__name__}: {exc}")
-                yield None
+        async for res in self.stream_process_tasks(tasks):
+            yield res
 
     @staticmethod
     def parse_url(
