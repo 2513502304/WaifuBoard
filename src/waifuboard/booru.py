@@ -44,7 +44,7 @@ from tenacity.before_sleep import before_sleep_log
 from tenacity.nap import sleep
 from tenacity.retry import retry_if_exception_type
 from tenacity.stop import stop_after_attempt
-from tenacity.wait import wait_exponential
+from tenacity.wait import wait_exception, wait_exponential
 
 from .utils import INVALID_CHARS_PATTERN, logger
 
@@ -289,11 +289,29 @@ class Booru:
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
+        def http_error(exception: Exception, default: float = 3.0) -> float:
+            """
+            根据 response status code 的值决定重试之间的等待间隔
+            """
+            if not hasattr(exception, "response") or not exception.response:
+                return 0.0
+
+            response = exception.response
+            if response.status_code == 200:
+                return 0.0
+            elif response.status_code == 429:
+                return float(response.headers.get("Retry-After", default))
+            else:
+                return 0.0
+
         async for attempt in AsyncRetrying(
             sleep=asyncio.sleep,
             stop=stop_after_attempt(max_attempt_number),
-            wait=wait_exponential(
-                multiplier=1, min=min_retry_sleep_time, max=max_retry_sleep_time
+            wait=(
+                wait_exception(http_error)
+                + wait_exponential(
+                    multiplier=1, min=min_retry_sleep_time, max=max_retry_sleep_time
+                )
             ),
             retry=retry_if_exception_type(Exception),
             before=before_log(logger, logging.DEBUG),
