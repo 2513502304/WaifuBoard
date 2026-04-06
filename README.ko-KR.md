@@ -1,4 +1,4 @@
-# ***WaifuBoard***
+# **_WaifuBoard_**
 
 [English README](https://github.com/2513502304/WaifuBoard/blob/main/README.md) | [简体中文 README](https://github.com/2513502304/WaifuBoard/blob/main/README.zh-CN.md) | [繁體中文 README](https://github.com/2513502304/WaifuBoard/blob/main/README.zh-TW.md) | [日本語 README](https://github.com/2513502304/WaifuBoard/blob/main/README.ja-JP.md) | [한국어 README](https://github.com/2513502304/WaifuBoard/blob/main/README.ko-KR.md)
 
@@ -14,12 +14,12 @@ pip install waifuboard
 
 ## **지원 플랫폼 및 기능**
 
-| 플랫폼                                   | 게시물(다운로드) | 풀(다운로드) |
+| 플랫폼                                  | 게시물(다운로드) | 풀(다운로드) |
 | --------------------------------------- | ---------------- | ------------ |
-| [Danbooru](https://danbooru.donmai.us/) | ✅                | ✅            |
-| [Safebooru](https://safebooru.org/)     | ✅                | ❌            |
-| [Yandere](https://yande.re/post)        | ✅                | ✅            |
-| 기타 플랫폼                              | ...              | ...          |
+| [Danbooru](https://danbooru.donmai.us/) | ✅               | ✅           |
+| [Safebooru](https://safebooru.org/)     | ✅               | ❌           |
+| [Yandere](https://yande.re/post)        | ✅               | ✅           |
+| 기타 플랫폼                             | ...              | ...          |
 
 ## **사용 방법**
 
@@ -33,18 +33,13 @@ from waifuboard import DanbooruClient
 async def main():
 	# API와 상호작용할 클라이언트를 생성
 	client = DanbooruClient(
-        max_clients=8,  # 최대 클라이언트 수는 전역 동시 요청 수의 상한을 제한하는 데 사용되며, 이는 동시성 비율에 영향을 미칩니다. None이거나 양수가 아닌 경우, 이 상한은 제한되지 않습니다
-        directory="./downloads",  # 현재 클라이언트 플랫폼의 파일 저장 루트 디렉토리
-        proxy_url="http://127.0.0.1:7890",  # 프록시 서버에 연결할 때 사용되는 URL. URL의 scheme은 "http", "https", "socks5", "socks5h" 중 하나여야 하며, 형식은 {scheme}://{[username]:[password]@}{host}:{port}/ 또는 {scheme}://{host}:{port}/ 이며, 예: "http://127.0.0.1:8080/"
-        proxy_auth=None,  # 프록시 요청에 사용되는 모든 인증 정보. (username, password) 형식의 two-tuple. bytes 타입 또는 仅含 ASCII 문자의 str 타입 일 수 있습니다. 참고: proxy_url에서 파싱된 auth 매개변수가 먼저 사용됩니다. proxy_url에서 인증 정보를 파싱하지 못하고 proxy_auth 매개변수가 None이 아닌 경우, proxy_auth 매개변수가 proxy_url에 인증 정보를 추가하는 데 사용됩니다
-        proxy_headers=None,  # 프록시 요청에 사용되는 모든 HTTP 헤더 정보. 예: {"Proxy-Authorization": "Basic <username>:<password>"}
-        proxy_ssl_context=None,  # 프록시 서버에 연결할 때 사용되는 SSL 컨텍스트. 지정되지 않은 경우, 기본 httpcore.default_ssl_context()가 사용됩니다
-        max_connections=100,  # 최대 동시 연결 수
-        max_keepalive_connections=20,  # 연결 풀에서 유지할 수 있는 최대 연결 수. max_connections보다 작거나 같아야 합니다
-        keepalive_expiry=30.0,  # 비활성 장시간 연결의 시간 제한(초 단위)
-        max_attempt_number=5,  # 최대 시도 횟수
-        default_headers=True,  # 기본 브라우저 헤더를 설정할지 여부
-        logger_level=logging.INFO,  # 로깅 수준
+        directory="./downloads",  # 현재 클라이언트 플랫폼의 파일 저장 루트 디렉터리
+        logger_level=logging.INFO,  # 로그 레벨
+        base_url=None,  # 각 요청에 URL 접두사(또는 base url)를 자동으로 설정 (해당되는 경우)
+        proxies="http://127.0.0.1:7897",  # 프로토콜 또는 프로토콜과 호스트를 프록시 URL에 매핑하는 딕셔너리 (예: {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}). 각 요청에 적용됨
+        retries=5,  # 요청 포기 전 자동 재시도 횟수
+        timeout=None,  # 기본 타임아웃 설정. 공개 메서드에서 타임아웃이 제공되지 않은 경우 사용됨
+        hooks=None,  # 각 요청에 사용되는 기본 훅. 훅 이름과 호출 가능 객체 리스트의 매핑 딕셔너리 또는 LifeCycleHook 인스턴스
     )
 
 	# 게시물 다운로드
@@ -98,19 +93,20 @@ if __name__ == "__main__":
 기여를 환영합니다. 새 플랫폼이나 기능을 추가하려면:
 
 - **아키텍처**
-	- 플랫폼은 `waifuboard.booru.Booru`(• 기본 클라이언트)를 상속하고, 적절한 `base_url`과 컴포넌트를 설정하세요.
-	- 기능/엔드포인트(예: Posts, Pools)는 `waifuboard.booru.BooruComponent`(• 기본 컴포넌트)를 상속하고, 기존 플랫폼과 일관된 `download(...)` 인터페이스를 구현하세요.
-	- `Booru`의 도우미(`concurrent_fetch_page`, `concurrent_download_file`, `concurrent_save_raws`, `concurrent_save_tags`)를 재사용하세요.
+    - 플랫폼은 `waifuboard.booru.Booru`(• 기본 클라이언트)를 상속하고, 적절한 `base_url`과 컴포넌트를 설정하세요.
+    - 기능/엔드포인트(예: Posts, Pools)는 `waifuboard.booru.BooruComponent`(• 기본 컴포넌트)를 상속하고, 기존 플랫폼과 일관된 `download(...)` 인터페이스를 구현하세요.
+    - `Booru`의 도우미(`concurrent_fetch_page`, `concurrent_download_file`, `concurrent_save_raws`, `concurrent_save_tags`)를 재사용하세요.
 
 - **GitHub 워크플로우**
-	1. 이 저장소를 포크하세요.
-	2. 변경 사항을 위한 새 브랜치를 만드세요: `git checkout -b feat/<short-name>`.
-	3. 플랫폼/컴포넌트를 구현하고, 이 README에 최소한의 문서를 추가하세요.
-	4. 기본 기능이 동작하는지 빠르게 로컬 테스트하세요.
-	5. 브랜치를 커밋하고 푸시하세요: `git push origin feat/<short-name>`.
-	6. `main`으로 풀 리퀘스트를 열고, 무엇/왜/테스트 방법을 간단히 설명하세요.
+    1.  이 저장소를 포크하세요.
+    2.  변경 사항을 위한 새 브랜치를 만드세요: `git checkout -b feat/<short-name>`.
+    3.  플랫폼/컴포넌트를 구현하고, 이 README에 최소한의 문서를 추가하세요.
+    4.  기본 기능이 동작하는지 빠르게 로컬 테스트하세요.
+    5.  브랜치를 커밋하고 푸시하세요: `git push origin feat/<short-name>`.
+    6.  `main`으로 풀 리퀘스트를 열고, 무엇/왜/테스트 방법을 간단히 설명하세요.
 
 **가이드라인**
+
 - 공개 API를 기존과 일관되게 유지하세요(메서드명, 매개변수, 반환값).
 - 새로운 메서드에는 docstring을 추가하세요. 특히 `download(...)`의 매개변수와 동작을 명시하세요.
 - 기존 코드 스타일과 로깅 방식을 따르세요.

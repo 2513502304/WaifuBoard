@@ -1,4 +1,4 @@
-# ***WaifuBoard***
+# **_WaifuBoard_**
 
 [English README](https://github.com/2513502304/WaifuBoard/blob/main/README.md) | [简体中文 README](https://github.com/2513502304/WaifuBoard/blob/main/README.zh-CN.md) | [繁體中文 README](https://github.com/2513502304/WaifuBoard/blob/main/README.zh-TW.md) | [日本語 README](https://github.com/2513502304/WaifuBoard/blob/main/README.ja-JP.md) | [한국어 README](https://github.com/2513502304/WaifuBoard/blob/main/README.ko-KR.md)
 
@@ -16,10 +16,10 @@ pip install waifuboard
 
 | 平台                                    | 帖文（下載） | 合集（下載） |
 | --------------------------------------- | ------------ | ------------ |
-| [Danbooru](https://danbooru.donmai.us/) | ✅            | ✅            |
-| [Safebooru](https://safebooru.org/)     | ✅            | ❌            |
-| [Yandere](https://yande.re/post)        | ✅            | ✅            |
-| 其他平台                                 | ...          | ...          |
+| [Danbooru](https://danbooru.donmai.us/) | ✅           | ✅           |
+| [Safebooru](https://safebooru.org/)     | ✅           | ❌           |
+| [Yandere](https://yande.re/post)        | ✅           | ✅           |
+| 其他平台                                | ...          | ...          |
 
 ## **使用方式**
 
@@ -33,18 +33,13 @@ from waifuboard import DanbooruClient
 async def main():
 	# 建立用戶端，用於與 API 互動
 	client = DanbooruClient(
-        max_clients=8,  # 最大客戶端數量，用以限制全局並發請求數量的上限，這會影響並發率。若為 None 或一個非正數，則不限制該上限
-        directory="./downloads",  # 當前客戶端平台的存儲文件根目錄
-        proxy_url="http://127.0.0.1:7890",  # 連接代理服務器時使用的 URL。URL 的 scheme 必須為 "http", "https", "socks5", "socks5h" 之一，URL 的形式為 {scheme}://{[username]:[password]@}{host}:{port}/ 或 {scheme}://{host}:{port}/，例如 "http://127.0.0.1:8080/"
-        proxy_auth=None,  # 任何代理認證信息，格式为 (username, password) 的 two-tuple。可以是 bytes 类型或仅含 ASCII 字符的 str 类型。注意：優先使用 proxy_url 中解析出的 auth 參數，若 proxy_url 中解析不出任何 auth，且 proxy_auth 參數不為 None，則使用 proxy_auth 參數為 proxy_url 添加身份驗證憑據
-        proxy_headers=None,  # 用於代理請求的任何 HTTP 頭部信息。例如 {"Proxy-Authorization": "Basic <username>:<password>"}
-        proxy_ssl_context=None,  # 用於驗證連接代理服務器的 SSL 上下文。如果未指定，將使用默認的 httpcore.default_ssl_context()
-        max_connections=100,  # 可建立的最大並發連接數
-        max_keepalive_connections=20,  # 允許連接池在此數值以下維持長連接的數量。該值應小於或等於 max_connections
-        keepalive_expiry=30.0,  # 空閒長連接的時間限制（以秒為單位）
-        max_attempt_number=5,  # 最大嘗試次數
-        default_headers=True,  # 是否設置默認瀏覽器 headers
+        directory="./downloads",  # 當前用戶端平台的檔案儲存根目錄
         logger_level=logging.INFO,  # 日誌級別
+        base_url=None,  # 為每個請求自動設定 URL 前綴（或 base url）（如適用）
+        proxies="http://127.0.0.1:7897",  # 協議或協議和主機到代理 URL 的映射字典（例如 {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}），應用於每個請求
+        retries=5,  # 請求在放棄前自動重試的次數
+        timeout=None,  # 預設逾時設定，當公開方法中未提供逾時參數時使用
+        hooks=None,  # 每個請求的預設鉤子。可以是將鉤子名稱映射到可呼叫物件列表的字典，或 LifeCycleHook 實例
     )
 
 	# 下載帖文
@@ -98,19 +93,20 @@ if __name__ == "__main__":
 歡迎貢獻。若要新增平台或功能：
 
 - **架構**
-	- 平台應繼承自 `waifuboard.booru.Booru`（*基底用戶端*），並設定合適的 `base_url` 與元件。
-	- 功能/端點（例如 Posts、Pools）應繼承自 `waifuboard.booru.BooruComponent`（*基底元件*），並實作與現有平台一致的 `download(...)` 介面。
-	- 重用 `Booru` 的輔助方法（例如 `concurrent_fetch_page`、`concurrent_download_file`、`concurrent_save_raws`、`concurrent_save_tags`）。
+    - 平台應繼承自 `waifuboard.booru.Booru`（_基底用戶端_），並設定合適的 `base_url` 與元件。
+    - 功能/端點（例如 Posts、Pools）應繼承自 `waifuboard.booru.BooruComponent`（_基底元件_），並實作與現有平台一致的 `download(...)` 介面。
+    - 重用 `Booru` 的輔助方法（例如 `concurrent_fetch_page`、`concurrent_download_file`、`concurrent_save_raws`、`concurrent_save_tags`）。
 
 - **GitHub 工作流程**
-	1. 將此儲存庫 Fork 到你的帳號。
-	2. 建立新分支：`git checkout -b feat/<short-name>`。
-	3. 實作你的平台/元件，並在此 README 中補充最少文件。
-	4. 在本地快速測試，確保基本功能可用。
-	5. 提交並推送分支：`git push origin feat/<short-name>`。
-	6. 向 `main` 發起 Pull Request，簡要描述變更內容（做了什麼/為什麼/如何測試）。
+    1.  將此儲存庫 Fork 到你的帳號。
+    2.  建立新分支：`git checkout -b feat/<short-name>`。
+    3.  實作你的平台/元件，並在此 README 中補充最少文件。
+    4.  在本地快速測試，確保基本功能可用。
+    5.  提交並推送分支：`git push origin feat/<short-name>`。
+    6.  向 `main` 發起 Pull Request，簡要描述變更內容（做了什麼/為什麼/如何測試）。
 
 **準則**
+
 - 保持公開 API 與既有實作一致（方法名稱、參數、回傳值）。
 - 為新增方法撰寫說明字串，尤其是 `download(...)` 的參數與行為。
 - 遵循現有的程式碼風格與日誌模式。

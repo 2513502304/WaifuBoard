@@ -9,18 +9,13 @@ from waifuboard.utils import logger
 async def main() -> None:
     start = time.time()
     client = DanbooruClient(
-        max_clients=8,  # 最大客户端数量，用以限制全局并发请求数量的上限，这会影响并发率。若为 None 或一个非正数，则不限制该上限
-        directory="./downloads",  # 当前客户端平台的存储文件根目录
-        proxy_url="http://127.0.0.1:7890",  # 连接代理服务器时使用的 URL。URL 的 scheme 必须为 "http", "https", "socks5", "socks5h" 之一，URL 的形式为 {scheme}://{[username]:[password]@}{host}:{port}/ 或 {scheme}://{host}:{port}/，例如 "http://127.0.0.1:8080/"
-        proxy_auth=None,  # 任何代理认证信息，格式为 (username, password) 的 two-tuple。可以是 bytes 类型或仅含 ASCII 字符的 str 类型。注意：优先使用 proxy_url 中解析出的 auth 参数，若 proxy_url 中解析不出任何 auth，且 proxy_auth 参数不为 None，则使用 proxy_auth 参数为 proxy_url 添加身份验证凭据
-        proxy_headers=None,  # 用于代理请求的任何 HTTP 头部信息。例如 {"Proxy-Authorization": "Basic <username>:<password>"}
-        proxy_ssl_context=None,  # 用于验证连接代理服务器的 SSL 上下文。如果未指定，将使用默认的 httpcore.default_ssl_context()
-        max_connections=100,  # 可建立的最大并发连接数
-        max_keepalive_connections=20,  # 允许连接池在此数值以下维持长连接的数量。该值应小于或等于 max_connections
-        keepalive_expiry=30.0,  # 空闲长连接的时间限制（以秒为单位）
-        max_attempt_number=5,  # 最大尝试次数
-        default_headers=True,  # 是否设置默认浏览器 headers
-        logger_level=logging.INFO,  # 日志级别
+        directory="./downloads",  # The root directory of the storage files for the current client platform
+        logger_level=logging.INFO,  # The log level
+        base_url=None,  # Automatically set a URL prefix (or base url) on every request emitted if applicable
+        proxies="http://127.0.0.1:7897",  # Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>
+        retries=5,  # Configure a number of times a request must be automatically retried before giving up
+        timeout=None,  # Default timeout configuration to be used if no timeout is provided in exposed methods
+        hooks=None,  # Default hooks to be used on every request emitted. Can be a dictionary mapping hook names to lists of callables, or a LifeCycleHook instance
     )
     await client.pools.download(
         limit=1000,

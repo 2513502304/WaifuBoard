@@ -2,14 +2,13 @@
 Moebooru Image Board API implementation.
 """
 
-import asyncio
 import os
 from typing import AsyncIterable
+from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
-import httpx
 import pandas as pd
 from asyncstdlib import enumerate as aenumerate
-from httpx._types import AuthTypes
+from niquests.exceptions import RequestException
 from lxml import etree
 
 from .booru import Booru, BooruComponent
@@ -78,7 +77,7 @@ class YandereClient(Moebooru):
 
         # 登录后修改（默认无账号）
 
-    def login(self, auth: AuthTypes):
+    def login(self, auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -127,7 +126,7 @@ class YanderePosts(MoebooruComponent):
                 return int(pagination[-2])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def list(
@@ -612,7 +611,7 @@ class YanderePools(MoebooruComponent):
                 return int(pagination[-2])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def list_pools(

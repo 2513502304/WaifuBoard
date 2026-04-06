@@ -6,47 +6,57 @@ import asyncio
 import logging
 import os
 import random
-import ssl
-import sys
-import time
-import typing
-from typing import Any, Literal, Callable, Coroutine, Iterable, AsyncIterable
+from http.cookiejar import CookieJar
+from typing import Any, Literal, Callable, Coroutine, Iterable, AsyncIterable, TypeAlias
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
-import httpx
 import orjson
 import pandas as pd
 from aiofiles import os as aioos
 from aiofiles import tempfile as aiotempfile
 from fake_useragent import UserAgent
-from httpx._client import EventHook
-from httpx._config import (
-    Limits,
-    Proxy,
-    Timeout,
+from niquests import AsyncSession
+from niquests.adapters import AsyncBaseAdapter, AsyncHTTPAdapter
+from niquests.cookies import (
+    RequestsCookieJar,
+    cookiejar_from_dict,
+    extract_cookies_to_jar,
+    merge_cookies,
 )
-from httpx._transports.base import AsyncBaseTransport
-from httpx._types import (
-    AuthTypes,
-    CertTypes,
-    CookieTypes,
-    HeaderTypes,
-    ProxyTypes,
-    QueryParamTypes,
-    TimeoutTypes,
+from niquests.models import AsyncResponse, PreparedRequest, Request, Response
+from niquests.typing import (
+    ASGIApp,
+    AsyncBodyType,
+    AsyncHookType,
+    AsyncHttpAuthenticationType,
+    AsyncResolverType,
+    BodyType,
+    CacheLayerAltSvcType,
+    CookiesType,
+    HeadersType,
+    HttpAuthenticationType,
+    HttpMethodType,
+    MultiPartFilesAltType,
+    MultiPartFilesType,
+    ProxyType,
+    QueryParameterType,
+    RetryType,
+    TimeoutType,
+    TLSClientCertType,
+    TLSVerifyType,
 )
-from httpx._urls import URL
-from tenacity import AsyncRetrying, RetryCallState, RetryError, TryAgain, retry
-from tenacity.after import after_log
-from tenacity.before import before_log
-from tenacity.before_sleep import before_sleep_log
-from tenacity.nap import sleep
-from tenacity.retry import retry_if_exception_type
-from tenacity.stop import stop_after_attempt
-from tenacity.wait import wait_exception, wait_exponential
+from niquests.extensions.revocation import RevocationConfiguration
+from niquests.hooks import AsyncLeakyBucketLimiter, AsyncTokenBucketLimiter
+from niquests.exceptions import RequestException
+from urllib3.util.retry import Retry
+from urllib3.util.timeout import Timeout
 
 from .utils import INVALID_CHARS_PATTERN, logger
+
+ProxiesType: TypeAlias = (
+    tuple[dict[str, str], ...] | tuple[str, ...] | dict[str, str] | str
+)
 
 __all__ = [
     "Booru",
@@ -62,105 +72,81 @@ class Booru:
     def __init__(
         self,
         *,
-        max_clients: int | None = None,
         directory: str = "./downloads",
-        auth: AuthTypes | None = None,
-        headers: HeaderTypes | None = None,
-        params: QueryParamTypes | None = None,
-        cookies: CookieTypes | None = None,
-        verify: ssl.SSLContext | str | bool = True,
-        cert: CertTypes | None = None,
-        http1: bool = True,
-        http2: bool = True,
-        proxy_url: URL | str | None = None,
-        proxy_auth: tuple[str, str] | None = None,
-        proxy_headers: HeaderTypes | None = None,
-        proxy_ssl_context: ssl.SSLContext | None = None,
-        mounts: None | (typing.Mapping[str, AsyncBaseTransport | None]) = None,
-        timeout: TimeoutTypes = Timeout(timeout=30.0),
-        follow_redirects: bool = True,
-        max_connections: int = 100,
-        max_keepalive_connections: int = 20,
-        keepalive_expiry: float = 30.0,
-        max_attempt_number: int = 5,
-        max_redirects: int = 30,
-        event_hooks: None | (typing.Mapping[str, list[EventHook]]) = None,
-        base_url: URL | str = "",
-        transport: AsyncBaseTransport | None = None,
-        trust_env: bool = True,
         default_headers: bool = True,
-        default_encoding: str | typing.Callable[[bytes], str] = "utf-8",
         logger_level: int = logging.INFO,
+        base_url: str | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        cookies: RequestsCookieJar | CookieJar | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        proxies: ProxyType | None = None,
+        trust_env: bool = True,
+        max_redirects: int = 30,
+        retries: RetryType = 5,
+        timeout: TimeoutType | None = None,
+        multiplexed: bool = True,
+        disable_http1: bool = False,
+        disable_http2: bool = False,
+        disable_http3: bool = False,
+        disable_ipv6: bool = False,
+        disable_ipv4: bool = False,
+        pool_connections: int = 10,
+        pool_maxsize: int = 100,
+        happy_eyeballs: bool | int = False,
+        keepalive_delay: float | int | None = 3600.0,
+        keepalive_idle_window: float | int | None = 60.0,
+        hooks: AsyncHookType[PreparedRequest | Response | AsyncResponse]
+        | None = AsyncLeakyBucketLimiter(rate=32.0),
+        verify: TLSVerifyType = True,
+        cert: TLSClientCertType | None = None,
+        resolver: AsyncResolverType | None = None,
+        source_address: tuple[str, int] | None = None,
+        quic_cache_layer: CacheLayerAltSvcType | None = None,
+        revocation_configuration: RevocationConfiguration
+        | None = RevocationConfiguration(),
+        app: ASGIApp | None = None,
     ):
         """
-        包装了 httpx.AsyncClient 的客户端类型，提供了更友好的 API 接口
+        Wraps the niquests.AsyncSession client type, providing a more friendly API interface
 
         Args:
-            max_clients (int | None, optional): 最大客户端数量，用以限制全局并发请求数量的上限，这会影响并发率。若为 None 或一个非正数，则不限制该上限. Defaults to None.
-            directory (str, optional): 当前客户端平台的存储文件根目录. Defaults to "./downloads".
-            auth (AuthTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
-            headers (HeaderTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
-            params (QueryParamTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
-            cookies (CookieTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
-            verify (ssl.SSLContext | str | bool, optional): See httpx.AsyncClient for more details. Defaults to True.
-            cert (CertTypes | None, optional): See httpx.AsyncClient for more details. Defaults to None.
-            http1 (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
-            http2 (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
-            proxy_url (URL | str | None, optional): 连接代理服务器时使用的 URL。URL 的 scheme 必须为 "http", "https", "socks5", "socks5h" 之一，URL 的形式为 {scheme}://{[username]:[password]@}{host}:{port}/ 或 {scheme}://{host}:{port}/，例如 "http://127.0.0.1:8080/"。Defaults to None.
-            proxy_auth (tuple[str, str] | None, optional): 任何代理认证信息，格式为 (username, password) 的 two-tuple。可以是 bytes 类型或仅含 ASCII 字符的 str 类型。注意：优先使用 proxy_url 中解析出的 auth 参数，若 proxy_url 中解析不出任何 auth，且 proxy_auth 参数不为 None，则使用 proxy_auth 参数为 proxy_url 添加身份验证凭据。Defaults to None.
-            proxy_headers (HeaderTypes | None, optional): 用于代理请求的任何 HTTP 头部信息。例如 {"Proxy-Authorization": "Basic <username>:<password>"}。Defaults to None.
-            proxy_ssl_context (ssl.SSLContext | None, optional): 用于验证连接代理服务器的 SSL 上下文。如果未指定，将使用默认的 httpcore.default_ssl_context()。Defaults to None.
-            mounts (None |, optional): See httpx.AsyncClient for more details. Defaults to None.
-            timeout (TimeoutTypes, optional): See httpx.AsyncClient for more details. Defaults to Timeout(timeout=30.0).
-            follow_redirects (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
-            max_connections (int, optional): 可建立的最大并发连接数. Defaults to 100.
-            max_keepalive_connections (int, optional): 允许连接池在此数值以下维持长连接的数量。该值应小于或等于 max_connections. Defaults to 20.
-            keepalive_expiry (float, optional): 空闲长连接的时间限制（以秒为单位）. Defaults to 30.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            max_redirects (int, optional): See httpx.AsyncClient for more details. Defaults to 30.
-            event_hooks (None |, optional): See httpx.AsyncClient for more details. Defaults to None.
-            base_url (URL | str, optional): See httpx.AsyncClient for more details. Defaults to "".
-            transport (AsyncBaseTransport | None, optional): See httpx.AsyncClient for more details. Defaults to None.
-            trust_env (bool, optional): See httpx.AsyncClient for more details. Defaults to True.
-            default_headers (bool, optional): 是否设置默认浏览器 headers. Defaults to True.
-            default_encoding (str | typing.Callable[[bytes], str], optional): See httpx.AsyncClient for more details. Defaults to "utf-8".
-            logger_level (int, optional): 日志级别. Defaults to logging.INFO.
+            directory (str, optional): The root directory of the storage files for the current client platform. Defaults to "./downloads".
+            default_headers (bool, optional): Whether to set default browser headers. Defaults to True.
+            logger_level (int, optional): The log level. Defaults to logging.INFO.
+            base_url (str, optional): Automatically set a URL prefix (or base url) on every request emitted if applicable. Defaults to None.
+            headers (HeadersType, optional): Default headers to be used on every request emitted. Defaults to None.
+            params (QueryParameterType, optional): Dictionary of querystring data to attach to each Request <Request>. The dictionary values may be lists for representing multivalued query parameters. Defaults to None.
+            cookies (RequestsCookieJar | CookieJar, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Default authentication tuple or object to attach to every request emitted. Defaults to None.
+            proxies (ProxyType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. Defaults to None.
+            trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
+            max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
+            retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 5.
+            timeout (TimeoutType, optional): Default timeout configuration to be used if no timeout is provided in exposed methods. Defaults to None.
+            multiplexed (bool, optional): Enable or disable concurrent request when the remote host support HTTP/2 onward. Defaults to True.
+            disable_http1 (bool, optional): Toggle to disable negotiating HTTP/1 with remote peers. Set it to True so that you may be able to force HTTP/2 over cleartext (h2c). Defaults to False.
+            disable_http2 (bool, optional): Toggle to disable negotiating HTTP/2 with remote peers. Defaults to False.
+            disable_http3 (bool, optional): Toggle to disable negotiating HTTP/3 with remote peers. Defaults to False.
+            disable_ipv6 (bool, optional): Toggle to disable using IPv6 even if the remote host supports IPv6. Defaults to False.
+            disable_ipv4 (bool, optional): Toggle to disable using IPv4 even if the remote host supports IPv4. Defaults to False.
+            pool_connections (int, optional): Number of concurrent hosts to be kept alive by this Session at a maximum. Defaults to 10.
+            pool_maxsize (int, optional): Maximum number of concurrent connections per (single) host at a time. Defaults to 100.
+            happy_eyeballs (bool | int, optional): Use IETF Happy Eyeballs algorithm when trying to connect to a remote host by issuing concurrent connection using available IPs. Tries IPv6/IPv4 at the same time or multiple IPv6 / IPv4. The domain name must yield multiple A or AAAA records for this to be used. Defaults to False.
+            keepalive_delay (float | int, optional): Delay expressed in seconds, in which we should keep a connection alive by sending PING frame. This only applies to HTTP/2 onward. Defaults to 3600.0.
+            keepalive_idle_window (float | int, optional): Delay expressed in seconds, in which we should send a PING frame after the connection being completely idle. This only applies to HTTP/2 onward. Defaults to 60.0.
+            hooks (AsyncHookType[PreparedRequest | Response | AsyncResponse], optional): Default hooks to be used on every request emitted. Can be a dictionary mapping hook names to lists of callables, or a LifeCycleHook instance. Defaults to AsyncLeakyBucketLimiter(rate=32.0).
+            verify (TLSVerifyType, optional): SSL Verification default. Defaults to True, requiring requests to verify the TLS certificate at the remote end. If verify is set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Only set this to False for testing. Defaults to True.
+            cert (TLSClientCertType, optional): SSL client certificate default, if String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            resolver (AsyncResolverType, optional): Specify a DNS resolver that should be used within this Session. Defaults to None.
+            source_address (tuple[str, int], optional): Bind Session to a specific network adapter and/or port so that all outgoing requests. Defaults to None.
+            quic_cache_layer (CacheLayerAltSvcType, optional): Provide an external cache mechanism to store HTTP/3 host capabilities. Defaults to None.
+            revocation_configuration (RevocationConfiguration, optional): How should that session do the certificate revocation check. Set it as None to disable this additional security measure. Defaults to RevocationConfiguration().
+            app (ASGIApp, optional): A WSGI (e.g. Flask) or ASGI (e.g. FastAPI) app to be mounted automatically. Defaults to None.
         """
-        # 最大客户端数量
-        self.max_clients = (
-            max_clients if max_clients is not None and max_clients > 0 else sys.maxsize
-        )
-        self.semaphore = asyncio.Semaphore(self.max_clients)
-
         # 当前客户端平台的存储文件根目录
         self.directory = directory
 
-        # 代理配置
-        if proxy_url is None:
-            proxy = None
-        else:
-            proxy = Proxy(
-                url=proxy_url,
-                auth=proxy_auth,
-                headers=proxy_headers,
-                ssl_context=proxy_ssl_context,
-            )
-
-        # 各种客户端行为限制的配置
-        limits = Limits(
-            max_connections=max_connections,
-            max_keepalive_connections=(
-                max_keepalive_connections
-                if max_connections >= max_keepalive_connections
-                else max_connections
-            ),
-            keepalive_expiry=keepalive_expiry,
-        )
-
-        # 最大尝试次数
-        self.max_attempt_number = max_attempt_number if max_attempt_number > 0 else 1
-
-        # 是否设置默认浏览器 headers
         if headers is None and default_headers:
             headers = {
                 "User-Agent": UserAgent().random,
@@ -169,43 +155,85 @@ class Booru:
                 "Connection": "keep-alive",
             }
 
-        # 创建底层 httpx 客户端
-        self.client = httpx.AsyncClient(
-            auth=auth,
-            headers=headers,
-            params=params,
-            cookies=cookies,
-            verify=verify,
-            cert=cert,
-            http1=http1,
-            http2=http2,
-            proxy=proxy,
-            mounts=mounts,
-            timeout=timeout,
-            follow_redirects=follow_redirects,
-            limits=limits,
-            max_redirects=max_redirects,
-            event_hooks=event_hooks,
+        if retries is not None:
+            if isinstance(retries, int):
+                retries = Retry(
+                    total=retries,
+                    redirect=True,
+                    allowed_methods=frozenset(
+                        ["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE"]
+                    ),
+                    status_forcelist=frozenset([413, 429, 503]),
+                    backoff_factor=1,
+                    backoff_max=10,
+                    raise_on_redirect=True,
+                    raise_on_status=True,
+                    history=None,
+                    respect_retry_after_header=True,
+                    remove_headers_on_redirect=frozenset(
+                        {"Proxy-Authorization", "Cookie", "Authorization"}
+                    ),
+                    backoff_jitter=3,
+                    retry_after_max=21600,
+                )
+
+        # 创建底层 niquests 客户端
+        self.client = AsyncSession(
+            resolver=resolver,
+            source_address=source_address,
+            quic_cache_layer=quic_cache_layer,
+            retries=retries,
+            multiplexed=multiplexed,
+            disable_http1=disable_http1,
+            disable_http2=disable_http2,
+            disable_http3=disable_http3,
+            disable_ipv6=disable_ipv6,
+            disable_ipv4=disable_ipv4,
+            pool_connections=pool_connections,
+            pool_maxsize=pool_maxsize,
+            happy_eyeballs=happy_eyeballs,
+            keepalive_delay=keepalive_delay,
+            keepalive_idle_window=keepalive_idle_window,
             base_url=base_url,
-            transport=transport,
-            trust_env=trust_env,
-            default_encoding=default_encoding,
+            timeout=timeout,
+            headers=headers,
+            auth=auth,
+            hooks=hooks,
+            revocation_configuration=revocation_configuration,
+            app=app,
         )
+        self.client.params = params if params is not None else {}
+        self.client.cookies = (
+            cookies
+            if cookies is not None
+            else cookiejar_from_dict({}, thread_free=True)
+        )
+        self.client.proxies = proxies if proxies is not None else {}
+        self.client.trust_env = trust_env
+        self.client.max_redirects = max_redirects
+        self.client.verify = verify
+        self.client.cert = cert
 
         # 设置日志级别
         logging.getLogger("WaifuBoard").setLevel(logger_level)
-        logging.getLogger("httpx").setLevel(logger_level)
 
     @property
     def auth(self):
         """
         发送请求时使用的身份验证类
-        返回底层 httpx 客户端的 auth 属性
+        返回底层 niquests 客户端的 auth 属性
         """
         return self.client.auth
 
     @auth.setter
-    def auth(self, auth):
+    def auth(self, auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None):
+        """
+        设置发送请求时使用的身份验证类
+        将传递给底层 niquests 客户端的 auth 属性
+
+        Args:
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType | None): 身份验证类
+        """
         self.client.auth = auth
         logger.info(f"{self.__class__.__name__} auth set to: {auth}")
 
@@ -213,7 +241,7 @@ class Booru:
     def base_url(self):
         """
         发送相对 URL 请求时使用的基础 URL
-        返回底层 httpx 客户端的 base_url 属性
+        返回底层 niquests 客户端的 base_url 属性
         """
         return self.client.base_url
 
@@ -221,7 +249,7 @@ class Booru:
     def base_url(self, url: str):
         """
         设置发送相对 URL 请求时使用的基础 URL
-        将传递给底层 httpx 客户端的 base_url 属性
+        将传递给底层 niquests 客户端的 base_url 属性
 
         Args:
             url (str): 基础 URL
@@ -234,441 +262,573 @@ class Booru:
         method: str,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送请求
+        Constructs a Request <Request>, prepares it and sends it. Returns Response <Response> object.
 
         Args:
-            method (str): 请求方法
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            method (str): Method for the new Request object.
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         parsed_url = urlparse(url)
 
-        if max_attempt_number is None:
-            max_attempt_number = self.max_attempt_number
-
-        headers = {}
-        if "headers" in kwargs:
-            if kwargs["headers"] is not None:
-                headers.update(kwargs["headers"])
-            kwargs.pop("headers")
+        if headers is None:
+            headers = {}
         if accept_encoding:
             headers.update({"Accept-Encoding": accept_encoding})
         if referer:
             headers.update({"Referer": referer})
 
         #!Fix httpx issue [当 URL 包含请求参数且设置了 params 参数时，URL 中的请求参数会意外消失](https://github.com/encode/httpx/issues/3621)
-        params = parse_qs(parsed_url.query)  # 获取 URL 中的请求参数
-        if "params" in kwargs:
-            if kwargs["params"] is not None:
-                params.update(kwargs["params"])
-            kwargs.pop("params")
+        #!这里保留该操作仅为为了兼容 httpx
+        if params is None:
+            params = {}
+        else:
+            params = (
+                parse_qs(parsed_url.query) | params
+            )  # 获取 URL 中的请求参数，并将其与 params 参数合并
         #!requests/httpx 无法*正确处理* dict 类型的请求参数，需要将其转换为 JSON 字符串
         for key, value in params.items():
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        def http_error(exception: Exception, default: float = 3.0) -> float:
-            """
-            根据 response status code 的值决定重试之间的等待间隔
-            """
-            if not hasattr(exception, "response") or not exception.response:
-                return 0.0
+        if proxies is not None:
+            if isinstance(proxies, tuple):
+                proxies = random.choice(proxies)
+            if isinstance(proxies, str):
+                proxies = {
+                    "http": proxies,
+                    "https": proxies,
+                }
 
-            response = exception.response
-            if response.status_code == 200:
-                return 0.0
-            elif response.status_code == 429:
-                return float(response.headers.get("Retry-After", default))
-            else:
-                return 0.0
+        response: Response | AsyncResponse = await self.client.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
+        )
+        await self.client.gather(response)
 
-        async for attempt in AsyncRetrying(
-            sleep=asyncio.sleep,
-            stop=stop_after_attempt(max_attempt_number),
-            wait=(
-                wait_exception(http_error)
-                + wait_exponential(
-                    multiplier=1, min=min_retry_sleep_time, max=max_retry_sleep_time
-                )
-            ),
-            retry=retry_if_exception_type(Exception),
-            before=before_log(logger, logging.DEBUG),
-            after=after_log(logger, logging.DEBUG),
-            before_sleep=before_sleep_log(logger, logging.INFO),
-            reraise=True,
-        ):
-            with attempt:
-                if attempt.retry_state.attempt_number == 1:
-                    if pre_request_sleep_time:
-                        pre_request_sleep_time = (
-                            random.choice(pre_request_sleep_time)
-                            if isinstance(pre_request_sleep_time, Iterable)
-                            else pre_request_sleep_time
-                        )
-                        logger.info(
-                            f"Sleep for {pre_request_sleep_time} seconds before requesting {url}"
-                        )
-                        if pre_request_sleep_type == "sync":
-                            time.sleep(pre_request_sleep_time)
-                        elif pre_request_sleep_type == "async":
-                            await asyncio.sleep(pre_request_sleep_time)
-                        else:
-                            raise ValueError(
-                                f"Invalid pre_request_sleep_type: {pre_request_sleep_type = }"
-                            )
-                async with self.semaphore:
-                    response = await self.client.request(
-                        method=method, url=url, headers=headers, params=params, **kwargs
-                    )
-                    if (
-                        attempt.retry_state.attempt_number == max_attempt_number
-                        and not reraise
-                    ):
-                        return response
-                    return response.raise_for_status()
+        logger.info(
+            f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
+        )
+
+        return response
 
     async def get(
         self,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送 GET 请求
+        Sends a GET request. Returns Response object.
 
         Args:
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         return await self.request(
             "GET",
             url,
-            pre_request_sleep_type=pre_request_sleep_type,
-            pre_request_sleep_time=pre_request_sleep_time,
-            min_retry_sleep_time=min_retry_sleep_time,
-            max_retry_sleep_time=max_retry_sleep_time,
-            max_attempt_number=max_attempt_number,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
             accept_encoding=accept_encoding,
             referer=referer,
-            reraise=reraise,
-            **kwargs,
         )
 
     async def options(
         self,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送 OPTIONS 请求
+        Sends a OPTIONS request. Returns Response object.
 
         Args:
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         return await self.request(
             "OPTIONS",
             url,
-            pre_request_sleep_type=pre_request_sleep_type,
-            pre_request_sleep_time=pre_request_sleep_time,
-            min_retry_sleep_time=min_retry_sleep_time,
-            max_retry_sleep_time=max_retry_sleep_time,
-            max_attempt_number=max_attempt_number,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
             accept_encoding=accept_encoding,
             referer=referer,
-            reraise=reraise,
-            **kwargs,
         )
 
     async def head(
         self,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送 HEAD 请求
+        Sends a HEAD request. Returns Response object.
 
         Args:
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         return await self.request(
             "HEAD",
             url,
-            pre_request_sleep_type=pre_request_sleep_type,
-            pre_request_sleep_time=pre_request_sleep_time,
-            min_retry_sleep_time=min_retry_sleep_time,
-            max_retry_sleep_time=max_retry_sleep_time,
-            max_attempt_number=max_attempt_number,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
             accept_encoding=accept_encoding,
             referer=referer,
-            reraise=reraise,
-            **kwargs,
         )
 
     async def post(
         self,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送 POST 请求
+        Sends a POST request. Returns Response object.
 
         Args:
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         return await self.request(
             "POST",
             url,
-            pre_request_sleep_type=pre_request_sleep_type,
-            pre_request_sleep_time=pre_request_sleep_time,
-            min_retry_sleep_time=min_retry_sleep_time,
-            max_retry_sleep_time=max_retry_sleep_time,
-            max_attempt_number=max_attempt_number,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
             accept_encoding=accept_encoding,
             referer=referer,
-            reraise=reraise,
-            **kwargs,
         )
 
     async def put(
         self,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送 PUT 请求
+        Sends a PUT request. Returns Response object.
 
         Args:
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         return await self.request(
             "PUT",
             url,
-            pre_request_sleep_type=pre_request_sleep_type,
-            pre_request_sleep_time=pre_request_sleep_time,
-            min_retry_sleep_time=min_retry_sleep_time,
-            max_retry_sleep_time=max_retry_sleep_time,
-            max_attempt_number=max_attempt_number,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
             accept_encoding=accept_encoding,
             referer=referer,
-            reraise=reraise,
-            **kwargs,
         )
 
     async def patch(
         self,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送 PATCH 请求
+        Sends a PATCH request. Returns Response object.
 
         Args:
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         return await self.request(
             "PATCH",
             url,
-            pre_request_sleep_type=pre_request_sleep_type,
-            pre_request_sleep_time=pre_request_sleep_time,
-            min_retry_sleep_time=min_retry_sleep_time,
-            max_retry_sleep_time=max_retry_sleep_time,
-            max_attempt_number=max_attempt_number,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
             accept_encoding=accept_encoding,
             referer=referer,
-            reraise=reraise,
-            **kwargs,
         )
 
     async def delete(
         self,
         url: str,
         *,
-        pre_request_sleep_type: Literal["sync", "async"] = "sync",
-        pre_request_sleep_time: int | float | Iterable[int | float] | None = None,
-        min_retry_sleep_time: int | float = 1.0,
-        max_retry_sleep_time: int | float = 10.0,
-        max_attempt_number: int | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
+        data: BodyType | AsyncBodyType | None = None,
+        cookies: CookiesType | None = None,
+        files: MultiPartFilesType | MultiPartFilesAltType | None = None,
+        auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
+        timeout: TimeoutType | None = None,
+        allow_redirects: bool = True,
+        proxies: ProxiesType | None = None,
+        hooks: AsyncHookType[PreparedRequest | Response] | None = None,
+        stream: bool | None = None,
+        verify: TLSVerifyType | None = None,
+        cert: TLSClientCertType | None = None,
+        json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-        reraise: bool = True,
-        **kwargs,
-    ) -> httpx.Response:
+    ) -> Response | AsyncResponse:
         """
-        使用底层 httpx 客户端发送 DELETE 请求
+        Sends a DELETE request. Returns Response object.
 
         Args:
-            url (str): 请求 URL
-            pre_request_sleep_type (Literal["sync", "async"], optional): 在发起请求前预先进行一段睡眠的类型，"sync" 方式将阻塞当前协程，而 "async" 方式则不会阻塞. Defaults to "sync".
-            pre_request_sleep_time (int | float | Iterable[int | float] | None, optional): 在发起请求前预先进行一段睡眠的时长，可以是常量值或范围（例如 2.7 或 range(1, 5)）. Defaults to None.
-            min_retry_sleep_time (int | float, optional): 每次重试时的最小间隔时间. Defaults to 1.0.
-            max_retry_sleep_time (int | float, optional): 每次重试时的最大间隔时间. Defaults to 10.0.
-            max_attempt_number (int, optional): 最大尝试次数. Defaults to 5.
-            accept_encoding (str, optional): 设置请求头中的 Accept-Encoding 字段的快捷方式. Defaults to None.
-            referer (str, optional): 设置请求头中的 Referer 字段的快捷方式. Defaults to None.
-            reraise (bool, optional): 是否在最后一次重试失败后，重新抛出异常. Defaults to True.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            url (str): URL for the new Request object.
+            headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
+            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
+            cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
+            files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
+            auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
+            timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
+            allow_redirects (bool, optional): Set to True by default. Defaults to True.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
+            stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
+            verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
+            cert (TLSClientCertType, optional): If String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
+            json (Any, optional): JSON to send in the body of the Request. Defaults to None.
+            accept_encoding (str, optional): A shortcut for setting the Accept-Encoding field in the request headers. Defaults to None.
+            referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            httpx.Response: 响应对象
+            Response | AsyncResponse: Response object.
         """
         return await self.request(
             "DELETE",
             url,
-            pre_request_sleep_type=pre_request_sleep_type,
-            pre_request_sleep_time=pre_request_sleep_time,
-            min_retry_sleep_time=min_retry_sleep_time,
-            max_retry_sleep_time=max_retry_sleep_time,
-            max_attempt_number=max_attempt_number,
+            headers=headers,
+            params=params,
+            data=data,
+            cookies=cookies,
+            files=files,
+            auth=auth,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            proxies=proxies,
+            hooks=hooks,
+            stream=stream,
+            verify=verify,
+            cert=cert,
+            json=json,
             accept_encoding=accept_encoding,
             referer=referer,
-            reraise=reraise,
-            **kwargs,
         )
 
     async def stream_process_tasks(
@@ -716,7 +876,7 @@ class Booru:
             async with aiofiles.open(filepath, "wb") as f:
                 await f.write(response.content)
             return (url, filepath)
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
             return None
 
@@ -888,7 +1048,7 @@ class Booru:
             headers (dict, optional): 请求头. Defaults to None.
             params (dict, optional): 请求参数. Defaults to None.
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            **kwargs: 传递给 niquests.AsyncSession.request 的其它关键字参数
 
         Returns:
             list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
@@ -904,7 +1064,7 @@ class Booru:
                 return content
             else:  # 单个帖子
                 return [content]
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
             return []
 
@@ -932,7 +1092,7 @@ class Booru:
             page_key (str): 页码参数的名称，用于在传递的 params 参数中设置页码
             concurrency (int, optional): 并发下载的数量. Defaults to 8.
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
-            **kwargs: 传递给 httpx.AsyncClient.request 的其它关键字参数
+            **kwargs: 传递给 niquests.AsyncSession.request 的其它关键字参数
 
         Yields:
             list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None

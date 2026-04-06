@@ -2,15 +2,14 @@
 Safebooru Image Board API implementation.
 """
 
-import asyncio
 import os
 import re
 from typing import AsyncIterable
+from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
-import httpx
 import pandas as pd
 from asyncstdlib import enumerate as aenumerate
-from httpx._types import AuthTypes
+from niquests.exceptions import RequestException
 from lxml import etree
 
 from .booru import Booru, BooruComponent
@@ -74,7 +73,7 @@ class SafebooruClient(Safebooru):
         #!由于 Safebooru 平台存在限流，最多检索 200000 篇帖子（无论是否登录）
         self.MAX_PID = 200000
 
-    def login(self, auth: AuthTypes):
+    def login(self, auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -131,7 +130,7 @@ class SafebooruPosts(SafebooruComponent):
                 return int(last_pid)
             else:  # 不存在分页器，说明该页面只有一页
                 return 0
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def list(

@@ -2,14 +2,13 @@
 Danbooru Image Board API implementation.
 """
 
-import asyncio
 import os
 from typing import AsyncIterable
+from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
-import httpx
 import pandas as pd
 from asyncstdlib import enumerate as aenumerate
-from httpx._types import AuthTypes
+from niquests.exceptions import RequestException
 from lxml import etree
 
 from .booru import Booru, BooruComponent
@@ -99,7 +98,7 @@ class DanbooruClient(Danbooru):
         # 登录后修改（默认无账号）
         self.MAX_PAGE = 1000
 
-    def login(self, auth: AuthTypes):
+    def login(self, auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None):
         # TODO
         raise NotImplementedError("The method is not implemented")
 
@@ -176,7 +175,7 @@ class DanbooruPosts(DanbooruComponent):
                 return int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def index(
@@ -828,7 +827,7 @@ class DanbooruTags(DanbooruComponent):
                 return int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def index(
@@ -1209,7 +1208,7 @@ class DanbooruArtists(DanbooruComponent):
                 return int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def index(
@@ -1646,7 +1645,7 @@ class DanbooruWikiPages(DanbooruComponent):
                 return int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def index(
@@ -2119,7 +2118,7 @@ class DanbooruPools(DanbooruComponent):
                 return int(pagination[-2].xpath("./text()")[0])
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def index(
@@ -2442,7 +2441,7 @@ class DanbooruPools(DanbooruComponent):
                 ] = await self.client.batch_process_tasks(tasks)
                 # 合并所有帖子
                 posts = pd.DataFrame(
-                    [post for res in task_results for post in res if res is not None]
+                    [post for res in task_results if res is not None for post in res]
                 )
 
                 # 下载帖子
@@ -2614,7 +2613,7 @@ class DanbooruPostVersions(DanbooruComponent):
                 else:  # 不存在分页器，说明该页面只有一页
                     pass
             return current_page
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def index(
@@ -2915,7 +2914,7 @@ class DanbooruPoolVersions(DanbooruComponent):
                 else:  # 不存在分页器，说明该页面只有一页
                     pass
             return current_page
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
 
     async def index_version(
