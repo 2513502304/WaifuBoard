@@ -4,10 +4,9 @@ import re
 from rich.console import Console
 from rich.logging import RichHandler
 
-console = Console(stderr=True)
+# * =================================================
 
-# 提取文件名中的无效 Windows/MacOS/Linux 路径字符规则
-INVALID_CHARS_PATTERN = re.compile(r'[\\/:*?"<>|]')
+console = Console(stderr=True)
 
 # 日志记录
 logging.basicConfig(
@@ -31,3 +30,32 @@ logging.basicConfig(
     force=False,
 )
 logger = logging.getLogger("WaifuBoard")
+
+# * =================================================
+
+# 匹配文件名中的无效 Windows/MacOS/Linux 路径字符
+INVALID_PATH_REGEX: re.Pattern[str] = re.compile(r'[\\/:*?"<>|]')
+# 匹配文件名中的通配符 *, ?, [, ], {, }
+INVALID_GLOB_REGEX: re.Pattern[str] = re.compile(r"[][*?{}]")
+
+
+def normalize_filepath(
+    filepath: str,
+    regexes: tuple[re.Pattern[str], ...] = (
+        INVALID_PATH_REGEX,
+        INVALID_GLOB_REGEX,
+    ),
+) -> str:
+    """
+    将路径名中的无效字符替换为空字符
+
+    Args:
+        filepath (str): 文件路径
+        regexes (list[re.Pattern[str]]): 用以匹配无效字符的正则表达式列表
+
+    Returns:
+        str: 替换后的路径
+    """
+    for regex in regexes:
+        filepath = regex.sub("", filepath)
+    return filepath

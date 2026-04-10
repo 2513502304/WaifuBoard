@@ -52,7 +52,7 @@ from niquests.exceptions import RequestException
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
-from .utils import INVALID_CHARS_PATTERN, logger
+from .utils import normalize_filepath, logger
 
 ProxiesType: TypeAlias = (
     tuple[dict[str, str], ...] | tuple[str, ...] | dict[str, str] | str
@@ -74,7 +74,7 @@ class Booru:
         *,
         directory: str = "./downloads",
         default_headers: bool = True,
-        logger_level: int = logging.INFO,
+        logger_level: int | str = logging.INFO,
         base_url: str | None = None,
         headers: HeadersType | None = None,
         params: QueryParameterType | None = None,
@@ -96,15 +96,17 @@ class Booru:
         happy_eyeballs: bool | int = False,
         keepalive_delay: float | int | None = 3600.0,
         keepalive_idle_window: float | int | None = 60.0,
-        hooks: AsyncHookType[PreparedRequest | Response | AsyncResponse]
-        | None = AsyncLeakyBucketLimiter(rate=32.0),
+        hooks: (
+            AsyncHookType[PreparedRequest | Response | AsyncResponse] | None
+        ) = AsyncLeakyBucketLimiter(rate=32.0),
         verify: TLSVerifyType = True,
         cert: TLSClientCertType | None = None,
         resolver: AsyncResolverType | None = None,
         source_address: tuple[str, int] | None = None,
         quic_cache_layer: CacheLayerAltSvcType | None = None,
-        revocation_configuration: RevocationConfiguration
-        | None = RevocationConfiguration(),
+        revocation_configuration: (
+            RevocationConfiguration | None
+        ) = RevocationConfiguration(),
         app: ASGIApp | None = None,
     ):
         """
@@ -113,7 +115,7 @@ class Booru:
         Args:
             directory (str, optional): The root directory of the storage files for the current client platform. Defaults to "./downloads".
             default_headers (bool, optional): Whether to set default browser headers. Defaults to True.
-            logger_level (int, optional): The log level. Defaults to logging.INFO.
+            logger_level (int | str, optional): The log level. Defaults to logging.INFO.
             base_url (str, optional): Automatically set a URL prefix (or base url) on every request emitted if applicable. Defaults to None.
             headers (HeadersType, optional): Default headers to be used on every request emitted. Defaults to None.
             params (QueryParameterType, optional): Dictionary of querystring data to attach to each Request <Request>. The dictionary values may be lists for representing multivalued query parameters. Defaults to None.
@@ -1128,7 +1130,7 @@ class Booru:
         Args:
             url (str): 文件 URL
             extract_pattern (Callable[[str], str], optional): 可调用对象，指定从 url 中提取文件名的规则. Defaults to os.path.basename.
-            remove_invalid_characters (bool, optional): 是否移除文件名中无效的 Windows/MacOS/Linux 路径字符. Defaults to True.
+            remove_invalid_characters (bool, optional): 是否移除文件名中无效的路径字符. Defaults to True.
 
         Returns:
             str: 用户可读的规范化名称
@@ -1151,9 +1153,9 @@ class Booru:
         filename = extract_pattern(url)
         # 解码 url 编码后的文件名
         filename = unquote(filename)
-        # 移除文件名中无效的 Windows/MacOS/Linux 路径字符
+        # 移除文件名中无效的路径字符
         if remove_invalid_characters:
-            filename = INVALID_CHARS_PATTERN.sub("", filename)
+            filename = normalize_filepath(filename)
         return filename
 
 

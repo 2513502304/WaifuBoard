@@ -29,7 +29,7 @@ __all__ = [
     "DanbooruWikiPages",
     # Type Versions
     "DanbooruPostVersions",
-    "DanbooruPoolVersions"
+    "DanbooruPoolVersions",
     # Non-versioned Types
     "DanbooruComments",
     "DanbooruForumPosts",
@@ -1072,12 +1072,12 @@ class DanbooruTags(DanbooruComponent):
         params = {}
 
         # 结果列表
-        result: list[
-            dict
-        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
-            url,
-            headers=headers,
-            params=params,
+        result: list[dict] = (
+            await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+                url,
+                headers=headers,
+                params=params,
+            )
         )
         return result
 
@@ -1455,12 +1455,12 @@ class DanbooruArtists(DanbooruComponent):
         params = {}
 
         # 结果列表
-        result: list[
-            dict
-        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
-            url,
-            headers=headers,
-            params=params,
+        result: list[dict] = (
+            await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+                url,
+                headers=headers,
+                params=params,
+            )
         )
         return result
 
@@ -1886,12 +1886,12 @@ class DanbooruWikiPages(DanbooruComponent):
         params = {}
 
         # 结果列表
-        result: list[
-            dict
-        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
-            url,
-            headers=headers,
-            params=params,
+        result: list[dict] = (
+            await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+                url,
+                headers=headers,
+                params=params,
+            )
         )
         return result
 
@@ -2016,7 +2016,7 @@ class DanbooruUsers(DanbooruComponent):
         raise NotImplementedError("The method is not implemented")
 
 
-class DanbooruForumPosts(DanbooruComments):
+class DanbooruForumPosts(DanbooruComponent):
     """
     Forum Posts: https://danbooru.donmai.us/wiki_pages/api%3Aforum_posts
     """
@@ -2343,12 +2343,12 @@ class DanbooruPools(DanbooruComponent):
         params = {}
 
         # 结果列表
-        result: list[
-            dict
-        ] = await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
-            url,
-            headers=headers,
-            params=params,
+        result: list[dict] = (
+            await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
+                url,
+                headers=headers,
+                params=params,
+            )
         )
         return result
 
@@ -2436,9 +2436,9 @@ class DanbooruPools(DanbooruComponent):
                     self.client.posts.show(id=id) for id in ids
                 ]  # 委托给 DanbooruPosts 类的 show 方法以获得单个 id 下的帖子
                 # 并发获取图集 ID 下所有帖子
-                task_results: list[
-                    list[dict] | None
-                ] = await self.client.batch_process_tasks(tasks)
+                task_results: list[list[dict] | None] = (
+                    await self.client.batch_process_tasks(tasks)
+                )
                 # 合并所有帖子
                 posts = pd.DataFrame(
                     [post for res in task_results if res is not None for post in res]
@@ -2566,7 +2566,9 @@ class DanbooruPostVersions(DanbooruComponent):
 
         #!当前 post_versions 页码，无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
         try:
-            return self.client.MAX_PAGE  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
+            return (
+                self.client.MAX_PAGE
+            )  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
 
             #!very slowly way, start with page 1
             current_page = 1
@@ -2867,7 +2869,9 @@ class DanbooruPoolVersions(DanbooruComponent):
 
         #!当前 pool_versions 页码，无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
         try:
-            return self.client.MAX_PAGE  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
+            return (
+                self.client.MAX_PAGE
+            )  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
 
             #!very slowly way, start with page 1
             current_page = 1
