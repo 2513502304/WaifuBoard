@@ -33,7 +33,7 @@ from niquests.typing import (
     AsyncResolverType,
     BodyType,
     CacheLayerAltSvcType,
-    CookiesType,
+    # CookiesType,
     HeadersType,
     HttpAuthenticationType,
     HttpMethodType,
@@ -54,6 +54,7 @@ from urllib3.util.timeout import Timeout
 
 from .utils import normalize_filepath, logger
 
+CookiesType: TypeAlias = dict[str, str] | RequestsCookieJar | CookieJar
 ProxyType: TypeAlias = dict[str, str] | str
 ProxiesType: TypeAlias = (
     tuple[dict[str, str], ...] | tuple[str, ...] | dict[str, str] | str
@@ -79,7 +80,7 @@ class Booru:
         base_url: str | None = None,
         headers: HeadersType | None = None,
         params: QueryParameterType | None = None,
-        cookies: RequestsCookieJar | CookieJar | None = None,
+        cookies: CookiesType | None = None,
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         proxies: ProxyType | None = None,
         trust_env: bool = True,
@@ -120,7 +121,7 @@ class Booru:
             base_url (str, optional): Automatically set a URL prefix (or base url) on every request emitted if applicable. Defaults to None.
             headers (HeadersType, optional): Default headers to be used on every request emitted. Defaults to None.
             params (QueryParameterType, optional): Dictionary of querystring data to attach to each Request <Request>. The dictionary values may be lists for representing multivalued query parameters. Defaults to None.
-            cookies (RequestsCookieJar | CookieJar, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
+            cookies (CookiesType, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Default authentication tuple or object to attach to every request emitted. Defaults to None.
             proxies (ProxyType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. Defaults to None.
             trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
@@ -157,6 +158,10 @@ class Booru:
                 "Accept": "*/*",
                 "Connection": "keep-alive",
             }
+
+        if cookies is not None:
+            if isinstance(cookies, dict):
+                cookies = cookiejar_from_dict(cookies, thread_free=True)
 
         if proxies is not None:
             if isinstance(proxies, str):
