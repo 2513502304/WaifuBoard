@@ -39,7 +39,7 @@ from niquests.typing import (
     HttpMethodType,
     MultiPartFilesAltType,
     MultiPartFilesType,
-    ProxyType,
+    # ProxyType,
     QueryParameterType,
     RetryType,
     TimeoutType,
@@ -54,6 +54,7 @@ from urllib3.util.timeout import Timeout
 
 from .utils import normalize_filepath, logger
 
+ProxyType: TypeAlias = dict[str, str] | str
 ProxiesType: TypeAlias = (
     tuple[dict[str, str], ...] | tuple[str, ...] | dict[str, str] | str
 )
@@ -121,7 +122,7 @@ class Booru:
             params (QueryParameterType, optional): Dictionary of querystring data to attach to each Request <Request>. The dictionary values may be lists for representing multivalued query parameters. Defaults to None.
             cookies (RequestsCookieJar | CookieJar, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Default authentication tuple or object to attach to every request emitted. Defaults to None.
-            proxies (ProxyType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. Defaults to None.
+            proxies (ProxyType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. Defaults to None.
             trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
             max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
             retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 5.
@@ -156,6 +157,13 @@ class Booru:
                 "Accept": "*/*",
                 "Connection": "keep-alive",
             }
+
+        if proxies is not None:
+            if isinstance(proxies, str):
+                proxies = {
+                    "http": proxies,
+                    "https": proxies,
+                }
 
         if retries is not None:
             if isinstance(retries, int):
