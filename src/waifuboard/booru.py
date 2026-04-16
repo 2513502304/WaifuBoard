@@ -94,7 +94,7 @@ class Booru:
         disable_ipv6: bool = False,
         disable_ipv4: bool = False,
         pool_connections: int = 10,
-        pool_maxsize: int = 100,
+        pool_maxsize: int = 30,
         happy_eyeballs: bool | int = False,
         keepalive_delay: float | int | None = 3600.0,
         keepalive_idle_window: float | int | None = 60.0,
@@ -135,7 +135,7 @@ class Booru:
             disable_ipv6 (bool, optional): Toggle to disable using IPv6 even if the remote host supports IPv6. Defaults to False.
             disable_ipv4 (bool, optional): Toggle to disable using IPv4 even if the remote host supports IPv4. Defaults to False.
             pool_connections (int, optional): Number of concurrent hosts to be kept alive by this Session at a maximum. Defaults to 10.
-            pool_maxsize (int, optional): Maximum number of concurrent connections per (single) host at a time. Defaults to 100.
+            pool_maxsize (int, optional): Maximum number of concurrent connections per (single) host at a time. Defaults to 30.
             happy_eyeballs (bool | int, optional): Use IETF Happy Eyeballs algorithm when trying to connect to a remote host by issuing concurrent connection using available IPs. Tries IPv6/IPv4 at the same time or multiple IPv6 / IPv4. The domain name must yield multiple A or AAAA records for this to be used. Defaults to False.
             keepalive_delay (float | int, optional): Delay expressed in seconds, in which we should keep a connection alive by sending PING frame. This only applies to HTTP/2 onward. Defaults to 3600.0.
             keepalive_idle_window (float | int, optional): Delay expressed in seconds, in which we should send a PING frame after the connection being completely idle. This only applies to HTTP/2 onward. Defaults to 60.0.
