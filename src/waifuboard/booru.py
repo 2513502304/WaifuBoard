@@ -7,7 +7,16 @@ import logging
 import os
 import random
 from http.cookiejar import CookieJar
-from typing import Any, Literal, Callable, Coroutine, Iterable, AsyncIterable, TypeAlias
+from typing import (
+    Any,
+    Literal,
+    Callable,
+    Coroutine,
+    Iterable,
+    AsyncIterable,
+    TypeAlias,
+    cast,
+)
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 
 import aiofiles
@@ -320,7 +329,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Constructs a Request <Request>, prepares it and sends it. Returns Response <Response> object.
 
@@ -345,7 +354,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         parsed_url = urlparse(url)
 
@@ -398,6 +407,14 @@ class Booru:
         )
         await self.client.gather(response)
 
+        # 统一为 sync Response：
+        # - await 一次 .content 把 body 读进 _content 缓存，再把 __class__ 降回 Response，调用方访问 .text / .content 就不必 await
+        if isinstance(response, AsyncResponse):
+            await response.content
+            response.__class__ = Response
+
+        response: Response = cast(Response, response)
+
         logger.info(
             f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
         )
@@ -424,7 +441,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Sends a GET request. Returns Response object.
 
@@ -448,7 +465,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         return await self.request(
             "GET",
@@ -491,7 +508,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Sends a OPTIONS request. Returns Response object.
 
@@ -515,7 +532,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         return await self.request(
             "OPTIONS",
@@ -558,7 +575,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Sends a HEAD request. Returns Response object.
 
@@ -582,7 +599,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         return await self.request(
             "HEAD",
@@ -625,7 +642,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Sends a POST request. Returns Response object.
 
@@ -649,7 +666,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         return await self.request(
             "POST",
@@ -692,7 +709,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Sends a PUT request. Returns Response object.
 
@@ -716,7 +733,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         return await self.request(
             "PUT",
@@ -759,7 +776,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Sends a PATCH request. Returns Response object.
 
@@ -783,7 +800,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         return await self.request(
             "PATCH",
@@ -826,7 +843,7 @@ class Booru:
         json: Any | None = None,
         accept_encoding: str | None = None,
         referer: str | None = None,
-    ) -> Response | AsyncResponse:
+    ) -> Response:
         """
         Sends a DELETE request. Returns Response object.
 
@@ -850,7 +867,7 @@ class Booru:
             referer (str, optional): A shortcut for setting the Referer field in the request headers. Defaults to None.
 
         Returns:
-            Response | AsyncResponse: Response object.
+            Response: Response object.
         """
         return await self.request(
             "DELETE",
