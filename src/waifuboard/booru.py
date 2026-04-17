@@ -47,7 +47,11 @@ from niquests.typing import (
     TLSVerifyType,
 )
 from niquests.extensions.revocation import RevocationConfiguration
-from niquests.hooks import AsyncLeakyBucketLimiter, AsyncTokenBucketLimiter
+from niquests.hooks import (
+    AsyncLifeCycleHook,
+    AsyncLeakyBucketLimiter,
+    AsyncTokenBucketLimiter,
+)
 from niquests.exceptions import RequestException
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
@@ -86,6 +90,7 @@ class Booru:
         trust_env: bool = True,
         max_redirects: int = 30,
         retries: RetryType = 5,
+        rate_limit: int | float | None = 10.0,
         timeout: TimeoutType | None = None,
         multiplexed: bool = True,
         disable_http1: bool = False,
@@ -100,7 +105,7 @@ class Booru:
         keepalive_idle_window: float | int | None = 60.0,
         hooks: (
             AsyncHookType[PreparedRequest | Response | AsyncResponse] | None
-        ) = AsyncLeakyBucketLimiter(rate=32.0),
+        ) = None,
         verify: TLSVerifyType = True,
         cert: TLSClientCertType | None = None,
         resolver: AsyncResolverType | None = None,
@@ -127,6 +132,7 @@ class Booru:
             trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
             max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
             retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 5.
+            rate_limit (int | float, optional): Maximum requests per second. Defaults to 10.0.
             timeout (TimeoutType, optional): Default timeout configuration to be used if no timeout is provided in exposed methods. Defaults to None.
             multiplexed (bool, optional): Enable or disable concurrent request when the remote host support HTTP/2 onward. Defaults to True.
             disable_http1 (bool, optional): Toggle to disable negotiating HTTP/1 with remote peers. Set it to True so that you may be able to force HTTP/2 over cleartext (h2c). Defaults to False.
@@ -139,7 +145,7 @@ class Booru:
             happy_eyeballs (bool | int, optional): Use IETF Happy Eyeballs algorithm when trying to connect to a remote host by issuing concurrent connection using available IPs. Tries IPv6/IPv4 at the same time or multiple IPv6 / IPv4. The domain name must yield multiple A or AAAA records for this to be used. Defaults to False.
             keepalive_delay (float | int, optional): Delay expressed in seconds, in which we should keep a connection alive by sending PING frame. This only applies to HTTP/2 onward. Defaults to 3600.0.
             keepalive_idle_window (float | int, optional): Delay expressed in seconds, in which we should send a PING frame after the connection being completely idle. This only applies to HTTP/2 onward. Defaults to 60.0.
-            hooks (AsyncHookType[PreparedRequest | Response | AsyncResponse], optional): Default hooks to be used on every request emitted. Can be a dictionary mapping hook names to lists of callables, or a LifeCycleHook instance. Defaults to AsyncLeakyBucketLimiter(rate=32.0).
+            hooks (AsyncHookType[PreparedRequest | Response | AsyncResponse], optional): Default hooks to be used on every request emitted. Can be a dictionary mapping hook names to lists of callables, or a LifeCycleHook instance. Defaults to None.
             verify (TLSVerifyType, optional): SSL Verification default. Defaults to True, requiring requests to verify the TLS certificate at the remote end. If verify is set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Only set this to False for testing. Defaults to True.
             cert (TLSClientCertType, optional): SSL client certificate default, if String, path to ssl client cert file (.pem). If Tuple, ('cert', 'key') pair, or ('cert', 'key', 'key_password'). Defaults to None.
             resolver (AsyncResolverType, optional): Specify a DNS resolver that should be used within this Session. Defaults to None.
@@ -191,6 +197,27 @@ class Booru:
                     backoff_jitter=3,
                     retry_after_max=21600,
                 )
+
+        if rate_limit is not None:
+            if isinstance(rate_limit, (int, float)):
+                limiter = AsyncLeakyBucketLimiter(rate=rate_limit)
+            else:
+                raise ValueError("rate_limit must be a int or float")
+            if hooks is not None:
+                if isinstance(hooks, dict):
+                    if pre_request := hooks.get("pre_request"):
+                        if isinstance(pre_request, list):
+                            pre_request.append(limiter.pre_request)
+                        else:
+                            pre_request = [pre_request, limiter.pre_request]
+                    else:
+                        hooks["pre_request"] = [limiter.pre_request]
+                elif isinstance(hooks, AsyncLifeCycleHook):
+                    hooks += limiter
+                else:
+                    raise ValueError("hooks must be a dictionary or LifeCycleHook")
+            else:
+                hooks = limiter
 
         # 创建底层 niquests 客户端
         self.client = AsyncSession(
