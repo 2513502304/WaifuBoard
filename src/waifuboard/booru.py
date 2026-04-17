@@ -430,11 +430,10 @@ class Booru:
                     cert=cert,
                     json=json,
                 )
+                await self.client.gather(response)
 
                 if attempt.retry_state.attempt_number < max_attempt_number:
                     response.raise_for_status()
-
-                await self.client.gather(response)
 
                 # 统一为 sync Response：
                 # - await 一次 .content 把 body 读进 _content 缓存，再把 __class__ 降回 Response，调用方访问 .text / .content 就不必 await
