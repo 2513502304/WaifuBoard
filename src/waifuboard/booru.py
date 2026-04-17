@@ -209,7 +209,7 @@ class Booru:
                         if isinstance(pre_request, list):
                             pre_request.append(limiter.pre_request)
                         else:
-                            pre_request = [pre_request, limiter.pre_request]
+                            hooks["pre_request"] = [pre_request, limiter.pre_request]
                     else:
                         hooks["pre_request"] = [limiter.pre_request]
                 elif isinstance(hooks, AsyncLifeCycleHook):
