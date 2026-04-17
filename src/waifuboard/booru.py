@@ -62,6 +62,14 @@ from niquests.hooks import (
     AsyncTokenBucketLimiter,
 )
 from niquests.exceptions import RequestException
+from tenacity import AsyncRetrying, RetryCallState, RetryError, TryAgain, retry
+from tenacity.after import after_log
+from tenacity.before import before_log
+from tenacity.before_sleep import before_sleep_log
+from tenacity.nap import sleep
+from tenacity.retry import retry_if_exception_type
+from tenacity.stop import stop_after_attempt
+from tenacity.wait import wait_exponential_jitter
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
@@ -322,6 +330,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -345,6 +354,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -387,39 +397,58 @@ class Booru:
                     "https": proxies,
                 }
 
-        response: Response | AsyncResponse = await self.client.request(
-            method=method,
-            url=url,
-            headers=headers,
-            params=params,
-            data=data,
-            cookies=cookies,
-            files=files,
-            auth=auth,
-            timeout=timeout,
-            allow_redirects=allow_redirects,
-            proxies=proxies,
-            hooks=hooks,
-            stream=stream,
-            verify=verify,
-            cert=cert,
-            json=json,
-        )
-        await self.client.gather(response)
+        if max_attempt_number is None:
+            max_attempt_number = 1
+        max_attempt_number = max(max_attempt_number, 1)
 
-        # 统一为 sync Response：
-        # - await 一次 .content 把 body 读进 _content 缓存，再把 __class__ 降回 Response，调用方访问 .text / .content 就不必 await
-        if isinstance(response, AsyncResponse):
-            await response.content
-            response.__class__ = Response
+        async for attempt in AsyncRetrying(
+            sleep=asyncio.sleep,
+            stop=stop_after_attempt(max_attempt_number),
+            wait=wait_exponential_jitter(initial=1, max=10, jitter=3),
+            retry=retry_if_exception_type(Exception),
+            before=before_log(logger, logging.DEBUG),
+            after=after_log(logger, logging.DEBUG),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        ):
+            with attempt:
+                response: Response | AsyncResponse = await self.client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    data=data,
+                    cookies=cookies,
+                    files=files,
+                    auth=auth,
+                    timeout=timeout,
+                    allow_redirects=allow_redirects,
+                    proxies=proxies,
+                    hooks=hooks,
+                    stream=stream,
+                    verify=verify,
+                    cert=cert,
+                    json=json,
+                )
 
-        response: Response = cast(Response, response)
+                if attempt.retry_state.attempt_number < max_attempt_number:
+                    response.raise_for_status()
 
-        logger.info(
-            f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
-        )
+                await self.client.gather(response)
 
-        return response
+                # 统一为 sync Response：
+                # - await 一次 .content 把 body 读进 _content 缓存，再把 __class__ 降回 Response，调用方访问 .text / .content 就不必 await
+                if isinstance(response, AsyncResponse):
+                    await response.content
+                    response.__class__ = Response
+
+                response: Response = cast(Response, response)
+
+                logger.info(
+                    f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
+                )
+
+                return response
 
     async def get(
         self,
@@ -434,6 +463,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -456,6 +486,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -479,6 +510,7 @@ class Booru:
             timeout=timeout,
             allow_redirects=allow_redirects,
             proxies=proxies,
+            max_attempt_number=max_attempt_number,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -501,6 +533,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -523,6 +556,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -546,6 +580,7 @@ class Booru:
             timeout=timeout,
             allow_redirects=allow_redirects,
             proxies=proxies,
+            max_attempt_number=max_attempt_number,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -568,6 +603,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -590,6 +626,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -613,6 +650,7 @@ class Booru:
             timeout=timeout,
             allow_redirects=allow_redirects,
             proxies=proxies,
+            max_attempt_number=max_attempt_number,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -635,6 +673,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -657,6 +696,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -680,6 +720,7 @@ class Booru:
             timeout=timeout,
             allow_redirects=allow_redirects,
             proxies=proxies,
+            max_attempt_number=max_attempt_number,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -702,6 +743,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -724,6 +766,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -747,6 +790,7 @@ class Booru:
             timeout=timeout,
             allow_redirects=allow_redirects,
             proxies=proxies,
+            max_attempt_number=max_attempt_number,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -769,6 +813,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -791,6 +836,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -814,6 +860,7 @@ class Booru:
             timeout=timeout,
             allow_redirects=allow_redirects,
             proxies=proxies,
+            max_attempt_number=max_attempt_number,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -836,6 +883,7 @@ class Booru:
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
         proxies: ProxiesType | None = None,
+        max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -858,6 +906,7 @@ class Booru:
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -881,6 +930,7 @@ class Booru:
             timeout=timeout,
             allow_redirects=allow_redirects,
             proxies=proxies,
+            max_attempt_number=max_attempt_number,
             hooks=hooks,
             stream=stream,
             verify=verify,
