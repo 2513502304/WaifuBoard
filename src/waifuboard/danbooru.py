@@ -719,7 +719,7 @@ class DanbooruPosts(DanbooruComponent):
                 # 保存帖子 api 响应的元数据（json 格式）
                 if save_raws:
                     # 保存元数据
-                    raws = posts.loc[[index]]  # 筛选后的元数据
+                    post_raws = posts.loc[[index]]  # 筛选后的元数据
                     raws_directory = os.path.join(
                         posts_directory, "raws"
                     )  # 元数据文件目录
@@ -727,7 +727,7 @@ class DanbooruPosts(DanbooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".json"
                     )  # 元数据文件名
                     await self.client.save_raws(
-                        raws,
+                        post_raws,
                         directory=raws_directory,
                         filename=raws_filename,
                         overwrite=overwrite,
@@ -736,7 +736,7 @@ class DanbooruPosts(DanbooruComponent):
                 # 保存标签
                 if save_tags:
                     # 帖子标签
-                    tags = posts.at[index, "tag_string"]  # 筛选后的 tags
+                    post_tags = posts.at[index, "tag_string"]  # 筛选后的 tags
                     tags_directory = os.path.join(
                         posts_directory, "tags"
                     )  # 标签文件目录
@@ -744,7 +744,7 @@ class DanbooruPosts(DanbooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".txt"
                     )  # 标签文件名
                     await self.client.save_tags(
-                        tags,
+                        post_tags,
                         directory=tags_directory,
                         filename=tags_filename,
                         overwrite=overwrite,
@@ -2470,7 +2470,7 @@ class DanbooruPools(DanbooruComponent):
                     # 保存帖子 api 响应的元数据（json 格式）
                     if save_raws:
                         # 保存元数据
-                        raws = posts.loc[[index]]  # 筛选后的元数据
+                        pool_raws = posts.loc[[index]]  # 筛选后的元数据
                         raws_directory = os.path.join(
                             posts_directory, "raws"
                         )  # 元数据文件目录
@@ -2478,7 +2478,7 @@ class DanbooruPools(DanbooruComponent):
                             os.path.splitext(os.path.basename(filepath))[0] + ".json"
                         )  # 元数据文件名
                         await self.client.save_raws(
-                            raws,
+                            pool_raws,
                             directory=raws_directory,
                             filename=raws_filename,
                             overwrite=overwrite,
@@ -2487,7 +2487,7 @@ class DanbooruPools(DanbooruComponent):
                     # 保存标签
                     if save_tags:
                         # 帖子标签
-                        tags = posts.at[index, "tag_string"]  # 筛选后的 tags
+                        pool_tags = posts.at[index, "tag_string"]  # 筛选后的 tags
                         tags_directory = os.path.join(
                             posts_directory, "tags"
                         )  # 标签文件目录
@@ -2495,7 +2495,7 @@ class DanbooruPools(DanbooruComponent):
                             os.path.splitext(os.path.basename(filepath))[0] + ".txt"
                         )  # 标签文件名
                         await self.client.save_tags(
-                            tags,
+                            pool_tags,
                             directory=tags_directory,
                             filename=tags_filename,
                             overwrite=overwrite,
