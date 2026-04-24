@@ -10,7 +10,7 @@
 pip install waifuboard
 ```
 
-**要求**：Python >= 3.9
+**要求**：Python >= 3.10
 
 ## **支持的平台和功能**
 

@@ -10,7 +10,7 @@ Asynchronous API for downloading images, tags, and metadata from image board sit
 pip install waifuboard
 ```
 
-**Requires**: Python >= 3.9
+**Requires**: Python >= 3.10
 
 ## **Supported platforms and features**
 
