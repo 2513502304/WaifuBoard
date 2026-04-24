@@ -18,6 +18,7 @@ from typing import (
     cast,
 )
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
+from urllib.request import getproxies
 
 import aiofiles
 import orjson
@@ -81,6 +82,16 @@ ProxiesType: TypeAlias = (
     tuple[dict[str, str], ...] | tuple[str, ...] | dict[str, str] | str
 )
 
+
+class UnsetType:
+    """Sentinel type indicating a parameter was not explicitly passed."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = UnsetType()
+
 __all__ = [
     "Booru",
     "BooruComponent",
@@ -103,7 +114,7 @@ class Booru:
         params: QueryParameterType | None = None,
         cookies: CookiesType | None = None,
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
-        proxies: ProxyType | None = None,
+        proxies: ProxiesType | None = None,
         trust_env: bool = True,
         max_redirects: int = 30,
         retries: RetryType = 5,
@@ -145,7 +156,7 @@ class Booru:
             params (QueryParameterType, optional): Dictionary of querystring data to attach to each Request <Request>. The dictionary values may be lists for representing multivalued query parameters. Defaults to None.
             cookies (CookiesType, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Default authentication tuple or object to attach to every request emitted. Defaults to None.
-            proxies (ProxyType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. Defaults to None.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. It can also be a tuple of such values; an element will be randomly selected per request. When not provided and trust_env is True, the process environment's proxy settings are captured as the default, giving an effective priority of request > session > env. Defaults to None.
             trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
             max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
             retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 5.
@@ -186,12 +197,14 @@ class Booru:
             if isinstance(cookies, dict):
                 cookies = cookiejar_from_dict(cookies, thread_free=True)
 
-        if proxies is not None:
-            if isinstance(proxies, str):
-                proxies = {
-                    "http": proxies,
-                    "https": proxies,
-                }
+        # 预吸收环境变量代理，让最终优先级从 niquests 的 request > env > session 变为 request > session > env
+        # niquests 在 Session.send 里会先看 request 级 proxies，没有才 fallback 到 env（当 trust_env=True）
+        # 最后才是 session.proxies — 所以 session 配置天然弱于环境变量，无法通过参数直接翻转
+        # 我们的做法：若用户未显式提供 proxies 且 trust_env=True，就在这里把 env 代理抓出来当作 session 默认
+        # 同时 self.client.proxies 始终置空，真正的代理值全部由 request() 在调用时以 request 级形式注入
+        # 这样 request 级永远压过 env，等价于得到 request > session > env 的优先级
+        if proxies is None and trust_env:
+            proxies = getproxies() or None
 
         if retries is not None:
             if isinstance(retries, int):
@@ -267,7 +280,8 @@ class Booru:
             if cookies is not None
             else cookiejar_from_dict({}, thread_free=True)
         )
-        self.client.proxies = proxies if proxies is not None else {}
+        self.client.proxies = {}
+        self._proxies: ProxiesType | None = proxies
         self.client.trust_env = trust_env
         self.client.max_redirects = max_redirects
         self.client.verify = verify
@@ -329,7 +343,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -353,7 +367,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
@@ -388,14 +402,17 @@ class Booru:
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        if proxies is not None:
-            if isinstance(proxies, tuple):
-                proxies = random.choice(proxies)
-            if isinstance(proxies, str):
-                proxies = {
-                    "http": proxies,
-                    "https": proxies,
-                }
+        # UNSET: 未传入，继承 Booru 实例配置（tuple 每次现挑）
+        # None : 显式禁用，request-level 空 URL 压过 env
+        # 其他 : 显式覆盖，tuple 现挑，str 归一化为 dict
+        if isinstance(proxies, UnsetType):
+            proxies = self._proxies or {}
+        elif proxies is None:
+            proxies = {"http": "", "https": ""}
+        if isinstance(proxies, tuple):
+            proxies = random.choice(proxies)
+        if isinstance(proxies, str):
+            proxies = {"http": proxies, "https": proxies}
 
         if max_attempt_number is None:
             max_attempt_number = 1
@@ -461,7 +478,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -484,7 +501,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
@@ -531,7 +548,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -554,7 +571,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
@@ -601,7 +618,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -624,7 +641,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
@@ -671,7 +688,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -694,7 +711,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
@@ -741,7 +758,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -764,7 +781,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
@@ -811,7 +828,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -834,7 +851,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
@@ -881,7 +898,7 @@ class Booru:
         auth: HttpAuthenticationType | AsyncHttpAuthenticationType | None = None,
         timeout: TimeoutType | None = None,
         allow_redirects: bool = True,
-        proxies: ProxiesType | None = None,
+        proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
@@ -904,7 +921,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
