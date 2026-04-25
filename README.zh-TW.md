@@ -27,6 +27,8 @@ pip install waifuboard
 
 ```python
 import asyncio
+import logging
+
 from waifuboard import DanbooruClient
 
 
@@ -36,10 +38,11 @@ async def main():
         directory="./downloads",  # 當前用戶端平台的檔案儲存根目錄
         logger_level=logging.INFO,  # 日誌級別
         base_url=None,  # 為每個請求自動設定 URL 前綴（或 base url）（如適用）
-        proxies="http://127.0.0.1:7897",  # 協議或協議和主機到代理 URL 的映射字典（例如 {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}），應用於每個請求
+        proxies="http://127.0.0.1:7897",  # 協議或協議和主機到代理 URL 的映射字典（例如 {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}），應用於每個請求。若傳入單一字串，將同時用於 http 與 https。也可以傳入由上述型別組成的元組，每次請求會從中隨機選擇其中之一。當未提供且 trust_env 為 True 時，行程環境的代理設定會被擷取作為預設值，最終優先順序為 request > session > env
         retries=5,  # 請求在放棄前自動重試的次數
+        max_attempt_number=3,  # 請求方法的預設外層重試預算（tenacity 級）。當請求方法未傳入自身的 max_attempt_number 時使用。若請求時仍為 None，底層呼叫回落為單次嘗試
+        rate_limit=10.0,  # 每秒最大請求數
         timeout=None,  # 預設逾時設定，當公開方法中未提供逾時參數時使用
-        hooks=None,  # 每個請求的預設鉤子。可以是將鉤子名稱映射到可呼叫物件列表的字典，或 LifeCycleHook 實例
     )
 
 	# 下載帖文

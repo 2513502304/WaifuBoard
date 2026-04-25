@@ -27,6 +27,8 @@ pip install waifuboard
 
 ```python
 import asyncio
+import logging
+
 from waifuboard import DanbooruClient
 
 
@@ -36,10 +38,11 @@ async def main():
         directory="./downloads",  # 当前客户端平台的文件存储根目录
         logger_level=logging.INFO,  # 日志级别
         base_url=None,  # 为每个请求自动设置 URL 前缀（或 base url）（如适用）
-        proxies="http://127.0.0.1:7897",  # 协议或协议和主机到代理 URL 的映射字典（例如 {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}），应用于每个请求
+        proxies="http://127.0.0.1:7897",  # 协议或协议和主机到代理 URL 的映射字典（例如 {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}），应用于每个请求。若传入单个字符串，将同时用于 http 和 https。也可以传入由上述类型组成的元组，每次请求会从中随机选择一个。当未提供且 trust_env 为 True 时，进程环境的代理设置会被捕获作为默认值，最终优先级为 request > session > env
         retries=5,  # 请求在放弃前自动重试的次数
+        max_attempt_number=3,  # 请求方法的默认外层重试预算（tenacity 级）。当请求方法未传入自身的 max_attempt_number 时使用。若请求时仍为 None，底层调用回落为单次尝试
+        rate_limit=10.0,  # 每秒最大请求数
         timeout=None,  # 默认超时配置，当公开方法中未提供超时参数时使用
-        hooks=None,  # 每个请求的默认钩子。可以是将钩子名称映射到可调用对象列表的字典，或 LifeCycleHook 实例
     )
 
 	# 下载帖子

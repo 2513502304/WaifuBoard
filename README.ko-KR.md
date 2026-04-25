@@ -27,6 +27,8 @@ pip install waifuboard
 
 ```python
 import asyncio
+import logging
+
 from waifuboard import DanbooruClient
 
 
@@ -36,10 +38,11 @@ async def main():
         directory="./downloads",  # 현재 클라이언트 플랫폼의 파일 저장 루트 디렉터리
         logger_level=logging.INFO,  # 로그 레벨
         base_url=None,  # 각 요청에 URL 접두사(또는 base url)를 자동으로 설정 (해당되는 경우)
-        proxies="http://127.0.0.1:7897",  # 프로토콜 또는 프로토콜과 호스트를 프록시 URL에 매핑하는 딕셔너리 (예: {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}). 각 요청에 적용됨
+        proxies="http://127.0.0.1:7897",  # 프로토콜 또는 프로토콜과 호스트를 프록시 URL에 매핑하는 딕셔너리 (예: {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}). 각 요청에 적용됨. 단일 문자열이 제공되면 http와 https 모두에 사용됨. 위 두 타입의 튜플도 가능하며 요청마다 그 중 하나가 무작위로 선택됨. 제공되지 않고 trust_env가 True이면 프로세스 환경의 프록시 설정이 기본값으로 캡처되어 최종 우선순위는 request > session > env가 됨
         retries=5,  # 요청 포기 전 자동 재시도 횟수
+        max_attempt_number=3,  # 요청 메서드의 기본 외부 재시도 예산(tenacity 레벨). 요청 메서드가 자체 max_attempt_number를 전달하지 않을 때 사용됨. 요청 시점에도 여전히 None이면 내부 호출이 단일 시도로 폴백됨
+        rate_limit=10.0,  # 초당 최대 요청 수
         timeout=None,  # 기본 타임아웃 설정. 공개 메서드에서 타임아웃이 제공되지 않은 경우 사용됨
-        hooks=None,  # 각 요청에 사용되는 기본 훅. 훅 이름과 호출 가능 객체 리스트의 매핑 딕셔너리 또는 LifeCycleHook 인스턴스
     )
 
 	# 게시물 다운로드

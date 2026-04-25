@@ -27,6 +27,8 @@ pip install waifuboard
 
 ```python
 import asyncio
+import logging
+
 from waifuboard import DanbooruClient
 
 
@@ -36,10 +38,11 @@ async def main():
         directory="./downloads",  # 現在のクライアントプラットフォームのファイル保存ルートディレクトリ
         logger_level=logging.INFO,  # ログレベル
         base_url=None,  # 各リクエストに自動的に URL プレフィックス（またはベース URL）を設定する（該当する場合）
-        proxies="http://127.0.0.1:7897",  # プロトコルまたはプロトコルとホストからプロキシ URL へのマッピング辞書（例: {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}）。各リクエストに適用される
+        proxies="http://127.0.0.1:7897",  # プロトコルまたはプロトコルとホストからプロキシ URL へのマッピング辞書（例: {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}）。各リクエストに適用される。単一の文字列を指定した場合は http と https の両方に使用される。これらの値からなるタプルも指定可能で、リクエストごとにランダムに 1 つが選ばれる。未指定かつ trust_env=True の場合はプロセス環境のプロキシ設定がデフォルトとして取り込まれ、最終的な優先順位は request > session > env となる
         retries=5,  # リクエストが失敗するまでの自動リトライ回数
+        max_attempt_number=3,  # リクエストメソッドのデフォルト外側リトライ予算（tenacity レベル）。リクエストメソッドが自前の max_attempt_number を渡さない場合に使用される。リクエスト時に依然 None の場合は内部呼び出しが 1 回の試行にフォールバックする
+        rate_limit=10.0,  # 1 秒あたりの最大リクエスト数
         timeout=None,  # デフォルトのタイムアウト設定。公開メソッドでタイムアウトが指定されていない場合に使用
-        hooks=None,  # 各リクエストで使用されるデフォルトフック。フック名と呼び出し可能オブジェクトのリストのマッピング辞書、または LifeCycleHook インスタンスを指定可能
     )
 
 	# 投稿をダウンロード
