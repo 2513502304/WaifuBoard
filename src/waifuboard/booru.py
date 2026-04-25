@@ -66,7 +66,7 @@ from niquests.exceptions import RequestException
 from tenacity import AsyncRetrying, RetryCallState, RetryError, TryAgain, retry
 from tenacity.after import after_log
 from tenacity.before import before_log
-from tenacity.before_sleep import before_sleep_log
+# from tenacity.before_sleep import before_sleep_log
 from tenacity.nap import sleep
 from tenacity.retry import retry_if_exception_type
 from tenacity.stop import stop_after_attempt
@@ -74,7 +74,7 @@ from tenacity.wait import wait_exponential_jitter
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
-from .utils import normalize_filepath, logger
+from .utils import normalize_filepath, logger, before_sleep_log
 
 CookiesType: TypeAlias = dict[str, str] | RequestsCookieJar | CookieJar
 ProxyType: TypeAlias = dict[str, str] | str
