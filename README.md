@@ -98,7 +98,7 @@ Contributions are welcome. To add new platforms or features:
 - **Architecture**
     - Platforms should inherit from `waifuboard.booru.Booru` (_Base Client_) and set the appropriate `base_url` and components.
     - Features/endpoints (e.g., Posts, Pools) should inherit from `waifuboard.booru.BooruComponent` (_Base Component_) and implement the `download(...)` interface consistent with existing platforms.
-    - Reuse helpers from `Booru` (e.g., `concurrent_fetch_page`, `concurrent_download_file`, `concurrent_save_raws`, `concurrent_save_tags`).
+    - Reuse helpers from `Booru` (e.g., `concurrent_fetch_page`, `concurrent_download_file`).
 
 - **GitHub workflow**
     1.  Fork this repository to your account.
