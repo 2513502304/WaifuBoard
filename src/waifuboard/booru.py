@@ -117,8 +117,8 @@ class Booru:
         proxies: ProxiesType | None = None,
         trust_env: bool = True,
         max_redirects: int = 30,
-        retries: RetryType = 5,
-        max_attempt_number: int | None = None,
+        retries: RetryType = 3,
+        max_attempt_number: int | None = 3,
         rate_limit: int | float | None = 10.0,
         timeout: TimeoutType | None = None,
         multiplexed: bool = True,
@@ -160,8 +160,8 @@ class Booru:
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. It can also be a tuple of such values; an element will be randomly selected per request. When not provided and trust_env is True, the process environment's proxy settings are captured as the default, giving an effective priority of request > session > env. Defaults to None.
             trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
             max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
-            retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 5.
-            max_attempt_number (int, optional): Default outer retry budget (tenacity-level) for request methods. Used when a request method does not pass its own max_attempt_number. If still None at request time, the underlying call falls back to a single attempt. Defaults to None.
+            retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 3.
+            max_attempt_number (int, optional): Default outer retry budget (tenacity-level) for request methods. Used when a request method does not pass its own max_attempt_number. If both this and the request-level value are None, the underlying call falls back to a single attempt. Defaults to 3.
             rate_limit (int | float, optional): Maximum requests per second. Defaults to 10.0.
             timeout (TimeoutType, optional): Default timeout configuration to be used if no timeout is provided in exposed methods. Defaults to None.
             multiplexed (bool, optional): Enable or disable concurrent request when the remote host support HTTP/2 onward. Defaults to True.

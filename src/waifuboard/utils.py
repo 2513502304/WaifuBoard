@@ -127,8 +127,22 @@ def before_sleep_log(
         )
         # * === 改动结束 ===
 
+        # * === 改动开始 ===
+        # niquests 在「高并发 + 多代理 + 多路复用」场景下重建已关闭连接时，会用最终协商的 HTTP/2.0 去打 CONNECT 隧道
+        # 而代理 CONNECT 隧道只能走 HTTP/1.1，于是抛出 NotImplementedError — 这是 niquests 的已知 bug
+        # 重试逻辑已成功兜住，此处只把这条特定异常的 retry 日志从 log_level 降级为 DEBUG，避免污染 WARN 流
+        # 想统计触发率时把 root logger 调到 DEBUG 即可观察
+        effective_log_level = log_level
+        if retry_state.outcome.failed:
+            ex = retry_state.outcome.exception()
+            if isinstance(ex, NotImplementedError) and (
+                "Unable to establish a tunnel using other than HTTP/1.1" in str(ex)
+            ):
+                effective_log_level = logging.DEBUG
+        # * === 改动结束 ===
+
         logger.log(
-            log_level,
+            effective_log_level,
             f"Retrying {fn_name} "
             # * === 改动开始 ===
             f"(attempt {progress}) "
