@@ -1072,7 +1072,7 @@ class Booru:
         directory: str,
         filename: str,
         overwrite: bool = False,
-    ) -> tuple[str, str, str] | None:
+    ) -> tuple[pd.DataFrame, str, str] | None:
         """
         保存单个元数据到指定路径
 
@@ -1083,7 +1083,7 @@ class Booru:
             overwrite (bool, optional): 是否覆盖已有同名文件. Defaults to False.
 
         Returns:
-            tuple[str, str, str]. 若保存成功，则返回对应的 (raws, directory, filename)；若保存失败，则返回 None
+            tuple[pd.DataFrame, str, str]. 若保存成功，则返回对应的 (raws, directory, filename)；若保存失败，则返回 None
         """
         # 创建目录
         if not await aioos.path.exists(directory):
@@ -1228,6 +1228,10 @@ class Booru:
         Yields:
             list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
         """
+        if headers is None:
+            headers = {}
+        if params is None:
+            params = {}
         # 创建异步任务列表
         tasks = []
         # 获取指定页码的帖子列表
