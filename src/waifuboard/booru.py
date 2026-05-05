@@ -1072,7 +1072,7 @@ class Booru:
         directory: str,
         filename: str,
         overwrite: bool = False,
-    ) -> tuple[str, str, str] | None:
+    ) -> tuple[pd.DataFrame, str, str] | None:
         """
         保存单个元数据到指定路径
 
