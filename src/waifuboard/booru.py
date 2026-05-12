@@ -74,7 +74,7 @@ from tenacity.wait import wait_exponential_jitter
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
-from .utils import normalize_filepath, logger, before_sleep_log
+from .utils import normalize_filepath, logger, before_sleep_log, format_proxy_log
 
 CookiesType: TypeAlias = dict[str, str] | RequestsCookieJar | CookieJar
 ProxyType: TypeAlias = dict[str, str] | str
@@ -91,6 +91,7 @@ class UnsetType:
 
 
 UNSET = UnsetType()
+
 
 __all__ = [
     "Booru",
@@ -132,9 +133,7 @@ class Booru:
         happy_eyeballs: bool | int = False,
         keepalive_delay: float | int | None = 3600.0,
         keepalive_idle_window: float | int | None = 60.0,
-        hooks: (
-            AsyncHookType[PreparedRequest | Response | AsyncResponse] | None
-        ) = None,
+        hooks: AsyncHookType[PreparedRequest | Response | AsyncResponse] | None = None,
         verify: TLSVerifyType = True,
         cert: TLSClientCertType | None = None,
         resolver: AsyncResolverType | None = None,
@@ -416,6 +415,8 @@ class Booru:
             proxies = random.choice(proxies)
         if isinstance(proxies, str):
             proxies = {"http": proxies, "https": proxies}
+        proxies = cast(dict[str, str], proxies)
+        proxy_log = format_proxy_log(url, proxies, self.client.base_url)
 
         # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
         if max_attempt_number is None:
@@ -467,7 +468,12 @@ class Booru:
                 response: Response = cast(Response, response)
 
                 logger.info(
-                    f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
+                    " ".join(
+                        [
+                            f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
+                            f"via {proxy_log}" if proxy_log else "",
+                        ]
+                    ).strip(),
                 )
 
                 return response
