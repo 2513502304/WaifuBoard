@@ -1,7 +1,9 @@
 import logging
 import re
 import typing
+from urllib.parse import urlparse
 
+from niquests.utils import merge_base_url, select_proxy
 from rich.console import Console
 from rich.logging import RichHandler
 from tenacity import _utils
@@ -64,6 +66,40 @@ def normalize_filepath(
     for regex in regexes:
         filepath = regex.sub("", filepath)
     return filepath
+
+
+# * =================================================
+
+
+def redact_proxy_url(proxy: str) -> str:
+    """Return a log-safe proxy URL while keeping enough detail to identify it."""
+    parsed = urlparse(proxy)
+
+    if parsed.netloc and "@" in parsed.netloc:
+        redacted_netloc = f"***:***@{parsed.netloc.rsplit('@', 1)[1]}"
+        return parsed._replace(netloc=redacted_netloc).geturl()
+
+    if not parsed.netloc and "@" in proxy:
+        return f"***:***@{proxy.rsplit('@', 1)[1]}"
+
+    return proxy
+
+
+def format_proxy_log(
+    url: str,
+    proxies: dict[str, str],
+    base_url: str | None = None,
+) -> str | None:
+    request_url = merge_base_url(base_url, url) or url
+    proxy = select_proxy(request_url, proxies)
+
+    if proxy is None:
+        return None
+
+    if proxy == "":
+        return "direct"
+
+    return redact_proxy_url(proxy)
 
 
 # * =================================================
