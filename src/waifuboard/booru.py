@@ -405,12 +405,12 @@ class Booru:
                 params[key] = orjson.dumps(value).decode("utf-8")
 
         # UNSET: 未传入，继承 Booru 实例配置（tuple 每次现挑）
-        # None : 显式禁用，request-level 空 URL 压过 env
+        # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
         # 其他 : 显式覆盖，tuple 现挑，str 归一化为 dict
         if isinstance(proxies, UnsetType):
             proxies = self._proxies or {}
         elif proxies is None:
-            proxies = {"http": "", "https": ""}
+            proxies = {"no_proxy": "*"}
         if isinstance(proxies, tuple):
             proxies = random.choice(proxies)
         if isinstance(proxies, str):
