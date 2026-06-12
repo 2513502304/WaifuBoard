@@ -14,6 +14,8 @@ from typing import (
     Coroutine,
     Iterable,
     AsyncIterable,
+    IO,
+    Mapping,
     TypeAlias,
     cast,
 )
@@ -41,7 +43,7 @@ from niquests.typing import (
     AsyncHookType,
     AsyncHttpAuthenticationType,
     AsyncResolverType,
-    BodyType,
+    # BodyType,
     CacheLayerAltSvcType,
     # CookiesType,
     HeadersType,
@@ -50,7 +52,7 @@ from niquests.typing import (
     MultiPartFilesAltType,
     MultiPartFilesType,
     # ProxyType,
-    QueryParameterType,
+    # QueryParameterType,
     RetryType,
     TimeoutType,
     TLSClientCertType,
@@ -76,11 +78,37 @@ from urllib3.util.timeout import Timeout
 
 from .utils import normalize_filepath, logger, before_sleep_log, format_proxy_log
 
+# niquests intentionally keeps its public typing narrower than some runtime-accepted
+# values; keep WaifuBoard's wrapper types explicit when we rely on that behavior.
+# Reference: https://github.com/jawah/niquests/pull/399
+BodyFormValueType: TypeAlias = str | bytes | int | float | bool | None
+BodyFormType: TypeAlias = (
+    list[tuple[str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]]]
+    | dict[str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]]
+)
+BodyType: TypeAlias = (
+    str
+    | bytes
+    | bytearray
+    | IO[bytes]
+    | IO[str]
+    | BodyFormType
+    | Iterable[bytes]
+    | Iterable[str]
+)
 CookiesType: TypeAlias = dict[str, str] | RequestsCookieJar | CookieJar
 ProxyType: TypeAlias = dict[str, str] | str
 ProxiesType: TypeAlias = (
     tuple[dict[str, str], ...] | tuple[str, ...] | dict[str, str] | str
 )
+QueryParameterScalarType: TypeAlias = str | bytes | int | float | bool | None
+QueryParameterValueType: TypeAlias = (
+    QueryParameterScalarType
+    | list[QueryParameterScalarType]
+    | tuple[QueryParameterScalarType, ...]
+    | dict[str, Any]
+)
+QueryParameterType: TypeAlias = Mapping[str, QueryParameterValueType]
 
 
 class UnsetType:
@@ -153,7 +181,7 @@ class Booru:
             logger_level (int | str, optional): The log level. Defaults to logging.INFO.
             base_url (str, optional): Automatically set a URL prefix (or base url) on every request emitted if applicable. Defaults to None.
             headers (HeadersType, optional): Default headers to be used on every request emitted. Defaults to None.
-            params (QueryParameterType, optional): Dictionary of querystring data to attach to each Request <Request>. The dictionary values may be lists for representing multivalued query parameters. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to attach to each Request <Request>. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued query parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             cookies (CookiesType, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Default authentication tuple or object to attach to every request emitted. Defaults to None.
             proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. It can also be a tuple of such values; an element will be randomly selected per request. When not provided and trust_env is True, the process environment's proxy settings are captured as the default, giving an effective priority of request > session > env. Defaults to None.
@@ -362,7 +390,7 @@ class Booru:
             method (str): Method for the new Request object.
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
@@ -397,7 +425,7 @@ class Booru:
             params = {}
         else:
             params = (
-                parse_qs(parsed_url.query) | params
+                parse_qs(parsed_url.query) | dict(params)
             )  # 获取 URL 中的请求参数，并将其与 params 参数合并
         #!requests/httpx 无法*正确处理* dict 类型的请求参数，需要将其转换为 JSON 字符串
         for key, value in params.items():
@@ -506,7 +534,7 @@ class Booru:
         Args:
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
@@ -576,7 +604,7 @@ class Booru:
         Args:
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
@@ -646,7 +674,7 @@ class Booru:
         Args:
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
@@ -716,7 +744,7 @@ class Booru:
         Args:
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
@@ -786,7 +814,7 @@ class Booru:
         Args:
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
@@ -856,7 +884,7 @@ class Booru:
         Args:
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.
@@ -926,7 +954,7 @@ class Booru:
         Args:
             url (str): URL for the new Request object.
             headers (HeadersType, optional): Dictionary of HTTP Headers to send with the Request. Defaults to None.
-            params (QueryParameterType, optional): Dictionary or bytes to be sent in the query string for the Request. Defaults to None.
+            params (QueryParameterType, optional): Mapping of querystring data to send with the Request. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             data (BodyType | AsyncBodyType, optional): Dictionary, list of tuples, bytes, or file-like object to send in the body of the Request. Defaults to None.
             cookies (CookiesType, optional): Dict or CookieJar object to send with the Request. Defaults to None.
             files (MultiPartFilesType | MultiPartFilesAltType, optional): Dictionary of 'filename': file-like-objects for multipart encoding upload. Defaults to None.

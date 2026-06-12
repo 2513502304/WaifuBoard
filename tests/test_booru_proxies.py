@@ -1,7 +1,8 @@
 import logging
 import unittest
+from typing import get_args
 
-from waifuboard.booru import Booru
+from waifuboard.booru import Booru, BodyFormValueType, QueryParameterScalarType
 
 
 class DummyRequest:
@@ -48,6 +49,41 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         await booru.get("https://example.test/data.json", proxies=None)
 
         self.assertEqual(client.request_kwargs["proxies"], {"no_proxy": "*"})
+
+    async def test_params_accept_numeric_values_and_json_dict_values(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        client = CapturingClient()
+        booru.client = client
+
+        await booru.get(
+            "https://example.test/data.json?existing=1",
+            params={"page": 2, "exact": True, "payload": {"rating": "safe"}},
+        )
+
+        self.assertEqual(
+            client.request_kwargs["params"],
+            {
+                "existing": ["1"],
+                "page": 2,
+                "exact": True,
+                "payload": '{"rating":"safe"}',
+            },
+        )
+
+    def test_public_request_value_types_include_niquests_numeric_scalars(self):
+        self.assertGreaterEqual(
+            set(get_args(QueryParameterScalarType)),
+            {int, float, bool},
+        )
+        self.assertGreaterEqual(
+            set(get_args(BodyFormValueType)),
+            {int, float, bool},
+        )
 
 
 if __name__ == "__main__":
