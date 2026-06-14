@@ -10,15 +10,11 @@ from http.cookiejar import CookieJar
 from typing import (
     Any,
     Literal,
-    Callable,
-    Coroutine,
-    Iterable,
-    AsyncIterable,
     IO,
-    Mapping,
     TypeAlias,
     cast,
 )
+from collections.abc import Callable, Coroutine, Iterable, AsyncIterable, Mapping
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 from urllib.request import getproxies
 

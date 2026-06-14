@@ -4,7 +4,7 @@ Safebooru Image Board API implementation.
 
 import os
 import re
-from typing import AsyncIterable
+from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd

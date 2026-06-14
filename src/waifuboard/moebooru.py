@@ -3,7 +3,7 @@ Moebooru Image Board API implementation.
 """
 
 import os
-from typing import AsyncIterable
+from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd
