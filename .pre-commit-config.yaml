@@ -1,0 +1,38 @@
+# 跳过 agent/Claude Code 安装的 skill 附带资产，它们不是本仓库维护的项目代码。
+exclude: ^(\.agents/skills/|\.claude/skills/)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # 移除行尾多余空白，避免无意义的 diff。
+      - id: trailing-whitespace
+      # 确保文本文件以单个换行符结尾，符合 POSIX 习惯。
+      - id: end-of-file-fixer
+      # 检查 JSON 文件语法是否有效。
+      - id: check-json
+      # 检查 XML 文件语法是否有效。
+      - id: check-xml
+      # 自动格式化 JSON 文件，只调整缩进（4 空格缩进）和换行，关闭 ASCII 强制转义，直接保留原始 Unicode 字符，不重排原始 key 顺序。
+      - id: pretty-format-json
+        args: [--autofix, --indent=4, --no-ensure-ascii, --no-sort-keys]
+      # 检查 TOML 文件语法是否有效。
+      - id: check-toml
+      # 检查 YAML 文件语法是否有效。
+      - id: check-yaml
+      # 检查 Python 文件能否被解析成合法 AST，提前发现语法错误。
+      - id: check-ast
+      # 阻止提交残留的 Git 合并冲突标记。
+      - id: check-merge-conflict
+      # 阻止提交 Python 调试语句，如 breakpoint() 或 pdb。
+      - id: debug-statements
+      # 阻止误提交体积过大的文件。
+      - id: check-added-large-files
+        args: [--maxkb=4096]
+
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.21.2
+    hooks:
+      # 按 Python 3.10+ 语法自动升级 Python 代码写法。
+      - id: pyupgrade
+        args: [--py310-plus]
