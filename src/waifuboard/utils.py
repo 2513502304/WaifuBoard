@@ -174,6 +174,27 @@ def format_proxy_log(
     return redact_proxy_url(proxy)
 
 
+def format_proxy_key(
+    url: str,
+    proxies: dict[str, str],
+    base_url: str | None = None,
+) -> str | None:
+    """Return the internal cooldown key without redacting proxy credentials."""
+    if proxies.get("no_proxy") == "*" and len(proxies) == 1:
+        return "direct"
+
+    request_url = merge_base_url(base_url, url) or url
+    proxy = select_proxy(request_url, proxies)
+
+    if proxy is None:
+        return None
+
+    if proxy == "":
+        return "direct"
+
+    return proxy
+
+
 # * =================================================
 
 

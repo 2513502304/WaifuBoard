@@ -84,6 +84,7 @@ from .utils import (
     normalize_filepath,
     logger,
     format_proxy_log,
+    format_proxy_key,
     format_response_metrics,
     format_retry_log,
     format_elapsed,
@@ -163,6 +164,7 @@ class Booru:
         max_attempt_number: int | None = 3,
         proxy_cooldown_threshold: int | None = None,
         proxy_cooldown: int | float = 600,
+        proxy_cooldown_statuses: Collection[int] | None = (429, 502, 503, 504),
         rate_limit: int | float | None = 10.0,
         timeout: TimeoutType | None = None,
         multiplexed: bool = True,
@@ -206,6 +208,7 @@ class Booru:
             max_attempt_number (int, optional): Default outer retry budget (tenacity-level) for request methods. Used when a request method does not pass its own max_attempt_number. If both this and the request-level value are None, the underlying call falls back to a single attempt. Defaults to 3.
             proxy_cooldown_threshold (int, optional): Consecutive per-proxy failures before temporarily cooling down that proxy. Set to None to disable proxy cooldown. Defaults to None.
             proxy_cooldown (int | float, optional): Seconds a failed proxy stays unavailable after reaching proxy_cooldown_threshold. Defaults to 600.
+            proxy_cooldown_statuses (Collection[int], optional): HTTP statuses that count as proxy failures when proxy cooldown is enabled. Set to None to count only transport exceptions. Defaults to (429, 502, 503, 504).
             rate_limit (int | float, optional): Maximum requests per second. Defaults to 10.0.
             timeout (TimeoutType, optional): Default timeout configuration to be used if no timeout is provided in exposed methods. Defaults to None.
             multiplexed (bool, optional): Enable or disable concurrent request when the remote host support HTTP/2 onward. Defaults to True.
@@ -333,6 +336,7 @@ class Booru:
             threshold=proxy_cooldown_threshold,
             cooldown=proxy_cooldown,
         )
+        self._proxy_cooldown_statuses = set(proxy_cooldown_statuses or ())
         self.client.trust_env = trust_env
         self.client.max_redirects = max_redirects
         self.client.verify = verify
@@ -422,8 +426,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
-            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states instead of triggering Booru's outer status retry. Defaults to None.
-            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. This does not override niquests' inner Retry status_forcelist. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -464,7 +468,7 @@ class Booru:
 
         async def select_request_proxies(
             value: ProxiesType | None | UnsetType,
-        ) -> tuple[dict[str, str], str | None]:
+        ) -> tuple[dict[str, str], str | None, str | None]:
             # UNSET: 未传入，继承 Booru 实例配置（tuple 每次现挑）
             # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
             # 其他 : 显式覆盖，tuple 会跳过正在 cooldown 的 proxy 后再现挑
@@ -476,8 +480,12 @@ class Booru:
             if isinstance(value, tuple):
                 candidates = list(value)
                 if not candidates:
-                    return {}, None
+                    return {}, None, None
 
+                candidate_keys = [
+                    format_proxy_key(url, normalize_proxies(candidate), self.client.base_url)
+                    for candidate in candidates
+                ]
                 candidate_logs = [
                     format_proxy_log(url, normalize_proxies(candidate), self.client.base_url)
                     for candidate in candidates
@@ -485,24 +493,30 @@ class Booru:
 
                 while True:
                     available = []
-                    unavailable_logs = []
-                    for candidate, candidate_log in zip(candidates, candidate_logs):
-                        if self._proxy_cooldown.is_available(candidate_log):
+                    unavailable_keys = []
+                    for candidate, candidate_key, candidate_log in zip(
+                        candidates, candidate_keys, candidate_logs
+                    ):
+                        if self._proxy_cooldown.is_available(candidate_key):
                             available.append(candidate)
                         else:
-                            remaining = self._proxy_cooldown.remaining(candidate_log or "")
+                            remaining = self._proxy_cooldown.remaining(candidate_key or "")
                             logger.debug(
                                 f"proxy.skip proxy={candidate_log} reason=cooldown "
                                 f"remaining={format_elapsed(remaining)}"
                             )
-                            if candidate_log is not None:
-                                unavailable_logs.append(candidate_log)
+                            if candidate_key is not None:
+                                unavailable_keys.append(candidate_key)
 
                     if available:
                         selected = normalize_proxies(random.choice(available))
-                        return selected, format_proxy_log(url, selected, self.client.base_url)
+                        return (
+                            selected,
+                            format_proxy_key(url, selected, self.client.base_url),
+                            format_proxy_log(url, selected, self.client.base_url),
+                        )
 
-                    wait_seconds = self._proxy_cooldown.next_available_in(unavailable_logs)
+                    wait_seconds = self._proxy_cooldown.next_available_in(unavailable_keys)
                     logger.warning(
                         "All proxies are cooling down; waiting "
                         f"{format_elapsed(wait_seconds)} before retrying proxy selection."
@@ -510,18 +524,17 @@ class Booru:
                     await asyncio.sleep(wait_seconds)
 
             selected = normalize_proxies(value)
+            selected_key = format_proxy_key(url, selected, self.client.base_url)
             selected_log = format_proxy_log(url, selected, self.client.base_url)
-            while not self._proxy_cooldown.is_available(selected_log):
-                remaining = self._proxy_cooldown.remaining(selected_log or "")
+            while not self._proxy_cooldown.is_available(selected_key):
+                remaining = self._proxy_cooldown.remaining(selected_key or "")
                 logger.warning(
                     f"Proxy {selected_log} is cooling down; waiting "
                     f"{format_elapsed(remaining)} before retrying proxy selection."
                 )
                 await asyncio.sleep(remaining)
 
-            return selected, selected_log
-
-        proxies, proxy_log = await select_request_proxies(proxies)
+            return selected, selected_key, selected_log
 
         # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
         if max_attempt_number is None:
@@ -537,8 +550,11 @@ class Booru:
         # 有些站点会把业务状态编码到非 2xx/429 状态码里；命中时不触发 Booru 外层 status retry。
         expected_status_codes = set(expected_statuses or ())
 
+        proxy_key: str | None = None
+        proxy_log: str | None = None
+
         def record_proxy_outcome(*, failed: bool) -> None:
-            cooled_down = self._proxy_cooldown.record(proxy_log, failed=failed)
+            cooled_down = self._proxy_cooldown.record(proxy_key, failed=failed)
             if cooled_down:
                 logger.warning(
                     f"proxy.cooldown proxy={proxy_log} "
@@ -583,6 +599,7 @@ class Booru:
             reraise=True,
         ):
             with attempt:
+                selected_proxies, proxy_key, proxy_log = await select_request_proxies(proxies)
                 start_time = time.perf_counter()
                 try:
                     response: Response | AsyncResponse = await self.client.request(
@@ -596,7 +613,7 @@ class Booru:
                         auth=auth,
                         timeout=timeout,
                         allow_redirects=allow_redirects,
-                        proxies=proxies,
+                        proxies=selected_proxies,
                         hooks=hooks,
                         stream=stream,
                         verify=verify,
@@ -613,16 +630,10 @@ class Booru:
                 is_expected_status = status_code in expected_status_codes
                 failed_status = (
                     isinstance(status_code, int)
-                    and status_code >= 400
+                    and status_code in self._proxy_cooldown_statuses
                     and not is_expected_status
                 )
                 record_proxy_outcome(failed=failed_status)
-
-                if (
-                    attempt.retry_state.attempt_number < max_attempt_number
-                    and failed_status
-                ):
-                    response.raise_for_status()
 
                 # 统一为 sync Response：
                 # - await 一次 .content 把 body 读进 _content 缓存，再把 __class__ 降回 Response，调用方访问 .text / .content 就不必 await
@@ -697,6 +708,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -771,6 +784,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -845,6 +860,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -919,6 +936,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -993,6 +1012,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -1067,6 +1088,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -1141,6 +1164,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Cannot be used together with ignore_statuses. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Cannot be used together with expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
