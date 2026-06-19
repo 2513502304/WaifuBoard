@@ -18,19 +18,12 @@ class DummyRequest:
 
 class DummyResponse:
     content = b"x" * 1536
-class DummyResponse:
-    content = b"x" * 1536
 
     def __init__(self, status_code=200, reason="OK"):
         self.request = DummyRequest()
         self.status_code = status_code
         self.reason = reason
         self.history = []
-
-    def __init__(self, status_code=200, reason="OK"):
-        self.request = DummyRequest()
-        self.status_code = status_code
-        self.reason = reason
 
     def raise_for_status(self):
         if self.status_code >= 400:
