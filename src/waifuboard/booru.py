@@ -15,7 +15,14 @@ from typing import (
     TypeAlias,
     cast,
 )
-from collections.abc import Callable, Coroutine, Iterable, AsyncIterable, Mapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Coroutine,
+    Iterable,
+    AsyncIterable,
+    Mapping,
+)
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 from urllib.request import getproxies
 
@@ -379,6 +386,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -403,6 +412,8 @@ class Booru:
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
             proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states instead of triggering Booru's outer status retry. Defaults to None.
+            ignore_statuses (Collection[int], optional): Alias for expected_statuses. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -456,6 +467,13 @@ class Booru:
         if max_attempt_number is None:
             max_attempt_number = 1
         max_attempt_number = max(max_attempt_number, 1)
+
+        if expected_statuses is not None and ignore_statuses is not None:
+            raise ValueError("expected_statuses and ignore_statuses cannot both be set")
+        if ignore_statuses is not None:
+            expected_statuses = ignore_statuses
+        # 有些站点会把业务状态编码到非 2xx/429 状态码里；命中时不触发 Booru 外层 status retry。
+        expected_status_codes = set(expected_statuses or ())
 
         def log_retry(retry_state: RetryCallState) -> None:
             if retry_state.outcome is None:
@@ -516,7 +534,13 @@ class Booru:
                 await self.client.gather(response)
                 elapsed = time.perf_counter() - start_time
 
-                if attempt.retry_state.attempt_number < max_attempt_number:
+                status_code = getattr(response, "status_code", None)
+                is_expected_status = status_code in expected_status_codes
+
+                if (
+                    attempt.retry_state.attempt_number < max_attempt_number
+                    and not is_expected_status
+                ):
                     response.raise_for_status()
 
                 # 统一为 sync Response：
@@ -543,6 +567,9 @@ class Booru:
                                 elapsed=elapsed,
                                 body_size=body_size,
                                 redirects=redirects,
+                                expected_statuses=(
+                                    expected_status_codes if is_expected_status else None
+                                ),
                             ),
                         ]
                     ).strip(),
@@ -564,6 +591,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -611,6 +640,8 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
+            ignore_statuses=ignore_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -634,6 +665,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -681,6 +714,8 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
+            ignore_statuses=ignore_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -704,6 +739,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -751,6 +788,8 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
+            ignore_statuses=ignore_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -774,6 +813,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -821,6 +862,8 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
+            ignore_statuses=ignore_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -844,6 +887,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -891,6 +936,8 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
+            ignore_statuses=ignore_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -914,6 +961,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -961,6 +1010,8 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
+            ignore_statuses=ignore_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -984,6 +1035,8 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
+        ignore_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -1031,6 +1084,8 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
+            ignore_statuses=ignore_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,

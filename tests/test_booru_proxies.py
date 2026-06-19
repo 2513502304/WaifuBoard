@@ -2,37 +2,52 @@ import logging
 import unittest
 from typing import get_args
 
+from niquests.exceptions import HTTPError
+
 from waifuboard.booru import Booru, BodyFormValueType, QueryParameterScalarType
 from waifuboard.utils import format_bytes
 
 
 class DummyRequest:
-    method = "GET"
-    url = "https://example.test/data.json"
+    def __init__(self, method="GET", url="https://example.test/data.json"):
+        self.method = method
+        self.url = url
 
 
 class DummyResponse:
-    request = DummyRequest()
-    reason = "OK"
     content = b"x" * 1536
     history = []
 
+    def __init__(self, status_code=200, reason="OK"):
+        self.request = DummyRequest()
+        self.status_code = status_code
+        self.reason = reason
+
     def raise_for_status(self):
+        if self.status_code >= 400:
+            raise HTTPError(
+                f"{self.status_code} Client Error: {self.reason}",
+                response=self,
+            )
         return None
 
     def __repr__(self):
-        return "<Response [200]>"
+        return f"<Response [{self.status_code}]>"
 
 
 class CapturingClient:
     base_url = None
 
-    def __init__(self):
+    def __init__(self, response=None):
         self.request_kwargs = None
+        self.response = response or DummyResponse()
+        self.request_count = 0
 
     async def request(self, **kwargs):
+        self.request_count += 1
         self.request_kwargs = kwargs
-        return DummyResponse()
+        self.response.request = DummyRequest(kwargs["method"], kwargs["url"])
+        return self.response
 
     async def gather(self, response):
         return None
@@ -80,6 +95,52 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(message, r"elapsed=\d+\.\d{3}s")
         self.assertIn("bytes=1.5 KB", message)
         self.assertIn("redirects=0", message)
+
+    async def test_expected_statuses_do_not_trigger_outer_status_retry(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.INFO,
+            trust_env=False,
+            max_attempt_number=2,
+        )
+        client = CapturingClient(DummyResponse(404, "Not Found"))
+        booru.client = client
+
+        with self.assertLogs("WaifuBoard", level="INFO") as records:
+            response = await booru.get(
+                "https://example.test/missing.json",
+                proxies=None,
+                expected_statuses={404},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(client.request_count, 1)
+        self.assertIn(
+            'GET https://example.test/missing.json "<[404]> Not Found" via direct',
+            records.output[-1],
+        )
+        self.assertIn("expected=404", records.output[-1])
+
+    async def test_ignore_statuses_is_expected_statuses_alias(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.INFO,
+            trust_env=False,
+            max_attempt_number=2,
+        )
+        client = CapturingClient(DummyResponse(404, "Not Found"))
+        booru.client = client
+
+        with self.assertLogs("WaifuBoard", level="INFO") as records:
+            response = await booru.get(
+                "https://example.test/missing.json",
+                proxies=None,
+                ignore_statuses={404},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(client.request_count, 1)
+        self.assertIn("expected=404", records.output[-1])
 
     async def test_params_accept_numeric_values_and_json_dict_values(self):
         booru = Booru(
