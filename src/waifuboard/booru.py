@@ -86,7 +86,9 @@ from .utils import (
     format_proxy_log,
     format_response_metrics,
     format_retry_log,
+    format_elapsed,
     get_body_size,
+    ProxyCooldownTracker,
 )
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
@@ -159,6 +161,8 @@ class Booru:
         max_redirects: int = 30,
         retries: RetryType = 3,
         max_attempt_number: int | None = 3,
+        proxy_cooldown_threshold: int | None = None,
+        proxy_cooldown: int | float = 600,
         rate_limit: int | float | None = 10.0,
         timeout: TimeoutType | None = None,
         multiplexed: bool = True,
@@ -200,6 +204,8 @@ class Booru:
             max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
             retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 3.
             max_attempt_number (int, optional): Default outer retry budget (tenacity-level) for request methods. Used when a request method does not pass its own max_attempt_number. If both this and the request-level value are None, the underlying call falls back to a single attempt. Defaults to 3.
+            proxy_cooldown_threshold (int, optional): Consecutive per-proxy failures before temporarily cooling down that proxy. Set to None to disable proxy cooldown. Defaults to None.
+            proxy_cooldown (int | float, optional): Seconds a failed proxy stays unavailable after reaching proxy_cooldown_threshold. Defaults to 600.
             rate_limit (int | float, optional): Maximum requests per second. Defaults to 10.0.
             timeout (TimeoutType, optional): Default timeout configuration to be used if no timeout is provided in exposed methods. Defaults to None.
             multiplexed (bool, optional): Enable or disable concurrent request when the remote host support HTTP/2 onward. Defaults to True.
@@ -323,6 +329,10 @@ class Booru:
         self.client.proxies = {}
         self._proxies: ProxiesType | None = proxies
         self._max_attempt_number: int | None = max_attempt_number
+        self._proxy_cooldown = ProxyCooldownTracker(
+            threshold=proxy_cooldown_threshold,
+            cooldown=proxy_cooldown,
+        )
         self.client.trust_env = trust_env
         self.client.max_redirects = max_redirects
         self.client.verify = verify
@@ -447,19 +457,71 @@ class Booru:
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        # UNSET: 未传入，继承 Booru 实例配置（tuple 每次现挑）
-        # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
-        # 其他 : 显式覆盖，tuple 现挑，str 归一化为 dict
-        if isinstance(proxies, UnsetType):
-            proxies = self._proxies or {}
-        elif proxies is None:
-            proxies = {"no_proxy": "*"}
-        if isinstance(proxies, tuple):
-            proxies = random.choice(proxies)
-        if isinstance(proxies, str):
-            proxies = {"http": proxies, "https": proxies}
-        proxies = cast(dict[str, str], proxies)
-        proxy_log = format_proxy_log(url, proxies, self.client.base_url)
+        def normalize_proxies(value: ProxiesType | dict[str, str]) -> dict[str, str]:
+            if isinstance(value, str):
+                return {"http": value, "https": value}
+            return cast(dict[str, str], value)
+
+        async def select_request_proxies(
+            value: ProxiesType | None | UnsetType,
+        ) -> tuple[dict[str, str], str | None]:
+            # UNSET: 未传入，继承 Booru 实例配置（tuple 每次现挑）
+            # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
+            # 其他 : 显式覆盖，tuple 会跳过正在 cooldown 的 proxy 后再现挑
+            if isinstance(value, UnsetType):
+                value = self._proxies or {}
+            elif value is None:
+                value = {"no_proxy": "*"}
+
+            if isinstance(value, tuple):
+                candidates = list(value)
+                if not candidates:
+                    return {}, None
+
+                candidate_logs = [
+                    format_proxy_log(url, normalize_proxies(candidate), self.client.base_url)
+                    for candidate in candidates
+                ]
+
+                while True:
+                    available = []
+                    unavailable_logs = []
+                    for candidate, candidate_log in zip(candidates, candidate_logs):
+                        if self._proxy_cooldown.is_available(candidate_log):
+                            available.append(candidate)
+                        else:
+                            remaining = self._proxy_cooldown.remaining(candidate_log or "")
+                            logger.debug(
+                                f"proxy.skip proxy={candidate_log} reason=cooldown "
+                                f"remaining={format_elapsed(remaining)}"
+                            )
+                            if candidate_log is not None:
+                                unavailable_logs.append(candidate_log)
+
+                    if available:
+                        selected = normalize_proxies(random.choice(available))
+                        return selected, format_proxy_log(url, selected, self.client.base_url)
+
+                    wait_seconds = self._proxy_cooldown.next_available_in(unavailable_logs)
+                    logger.warning(
+                        "All proxies are cooling down; waiting "
+                        f"{format_elapsed(wait_seconds)} before retrying proxy selection."
+                    )
+                    await asyncio.sleep(wait_seconds)
+
+            selected = normalize_proxies(value)
+            selected_log = format_proxy_log(url, selected, self.client.base_url)
+            while not self._proxy_cooldown.is_available(selected_log):
+                remaining = self._proxy_cooldown.remaining(selected_log or "")
+                logger.warning(
+                    f"Proxy {selected_log} is cooling down; waiting "
+                    f"{format_elapsed(remaining)} before retrying proxy selection."
+                )
+                await asyncio.sleep(remaining)
+
+            return selected, selected_log
+
+        proxies, proxy_log = await select_request_proxies(proxies)
 
         # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
         if max_attempt_number is None:
@@ -474,6 +536,15 @@ class Booru:
             expected_statuses = ignore_statuses
         # 有些站点会把业务状态编码到非 2xx/429 状态码里；命中时不触发 Booru 外层 status retry。
         expected_status_codes = set(expected_statuses or ())
+
+        def record_proxy_outcome(*, failed: bool) -> None:
+            cooled_down = self._proxy_cooldown.record(proxy_log, failed=failed)
+            if cooled_down:
+                logger.warning(
+                    f"proxy.cooldown proxy={proxy_log} "
+                    f"failures={self._proxy_cooldown.threshold} "
+                    f"cooldown={format_elapsed(self._proxy_cooldown.cooldown)}"
+                )
 
         def log_retry(retry_state: RetryCallState) -> None:
             if retry_state.outcome is None:
@@ -513,33 +584,43 @@ class Booru:
         ):
             with attempt:
                 start_time = time.perf_counter()
-                response: Response | AsyncResponse = await self.client.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    params=params,
-                    data=data,
-                    cookies=cookies,
-                    files=files,
-                    auth=auth,
-                    timeout=timeout,
-                    allow_redirects=allow_redirects,
-                    proxies=proxies,
-                    hooks=hooks,
-                    stream=stream,
-                    verify=verify,
-                    cert=cert,
-                    json=json,
-                )
-                await self.client.gather(response)
+                try:
+                    response: Response | AsyncResponse = await self.client.request(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        params=params,
+                        data=data,
+                        cookies=cookies,
+                        files=files,
+                        auth=auth,
+                        timeout=timeout,
+                        allow_redirects=allow_redirects,
+                        proxies=proxies,
+                        hooks=hooks,
+                        stream=stream,
+                        verify=verify,
+                        cert=cert,
+                        json=json,
+                    )
+                    await self.client.gather(response)
+                except Exception:
+                    record_proxy_outcome(failed=True)
+                    raise
                 elapsed = time.perf_counter() - start_time
 
                 status_code = getattr(response, "status_code", None)
                 is_expected_status = status_code in expected_status_codes
+                failed_status = (
+                    isinstance(status_code, int)
+                    and status_code >= 400
+                    and not is_expected_status
+                )
+                record_proxy_outcome(failed=failed_status)
 
                 if (
                     attempt.retry_state.attempt_number < max_attempt_number
-                    and not is_expected_status
+                    and failed_status
                 ):
                     response.raise_for_status()
 

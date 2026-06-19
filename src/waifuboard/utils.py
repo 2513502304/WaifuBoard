@@ -1,3 +1,5 @@
+import time
+from collections import deque
 import logging
 import re
 import typing
@@ -66,6 +68,73 @@ def normalize_filepath(
     for regex in regexes:
         filepath = regex.sub("", filepath)
     return filepath
+
+
+# * =================================================
+
+
+class ProxyCooldownTracker:
+    """Track per-proxy consecutive failures and temporary cooldown state."""
+
+    def __init__(
+        self,
+        *,
+        threshold: int | None = None,
+        cooldown: int | float = 600,
+        clock: typing.Callable[[], float] = time.monotonic,
+    ):
+        if threshold is not None and threshold < 1:
+            raise ValueError("proxy cooldown threshold must be None or >= 1")
+        if cooldown < 0:
+            raise ValueError("proxy cooldown must be >= 0")
+
+        self.threshold = threshold
+        self.cooldown = float(cooldown)
+        self._clock = clock
+        self._failures: dict[str, deque[bool]] = {}
+        self._cooldown_until: dict[str, float] = {}
+
+    @property
+    def enabled(self) -> bool:
+        return self.threshold is not None
+
+    def remaining(self, proxy: str) -> float:
+        if not self.enabled:
+            return 0.0
+
+        remaining = self._cooldown_until.get(proxy, 0.0) - self._clock()
+        if remaining <= 0:
+            self._cooldown_until.pop(proxy, None)
+            return 0.0
+
+        return remaining
+
+    def is_available(self, proxy: str | None) -> bool:
+        return proxy is None or proxy == "direct" or self.remaining(proxy) <= 0
+
+    def next_available_in(self, proxies: typing.Iterable[str]) -> float:
+        remaining_values = [self.remaining(proxy) for proxy in proxies]
+        remaining_values = [remaining for remaining in remaining_values if remaining > 0]
+        return min(remaining_values, default=0.0)
+
+    def record(self, proxy: str | None, *, failed: bool) -> bool:
+        if not self.enabled or proxy is None or proxy == "direct":
+            return False
+
+        if not failed:
+            self._failures.pop(proxy, None)
+            return False
+
+        assert self.threshold is not None
+        failures = self._failures.setdefault(proxy, deque(maxlen=self.threshold))
+        failures.append(True)
+
+        if len(failures) < self.threshold:
+            return False
+
+        self._failures.pop(proxy, None)
+        self._cooldown_until[proxy] = self._clock() + self.cooldown
+        return True
 
 
 # * =================================================
