@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import random
+import time
 from http.cookiejar import CookieJar
 from typing import (
     Any,
@@ -72,7 +73,14 @@ from tenacity.wait import wait_exponential_jitter
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
-from .utils import normalize_filepath, logger, before_sleep_log, format_proxy_log
+from .utils import (
+    normalize_filepath,
+    logger,
+    format_proxy_log,
+    format_response_metrics,
+    format_retry_log,
+    get_body_size,
+)
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
 # values; keep WaifuBoard's wrapper types explicit when we rely on that behavior.
@@ -449,6 +457,32 @@ class Booru:
             max_attempt_number = 1
         max_attempt_number = max(max_attempt_number, 1)
 
+        def log_retry(retry_state: RetryCallState) -> None:
+            if retry_state.outcome is None:
+                raise RuntimeError("log_retry() called before outcome was set")
+            if retry_state.next_action is None:
+                raise RuntimeError("log_retry() called before next_action was set")
+
+            if retry_state.outcome.failed:
+                exc = retry_state.outcome.exception()
+                reason = f"{exc.__class__.__name__}: {exc}"
+            else:
+                reason = f"returned {retry_state.outcome.result()}"
+
+            logger.warning(
+                format_retry_log(
+                    method=method,
+                    url=url,
+                    proxy_log=proxy_log,
+                    next_attempt=retry_state.attempt_number + 1,
+                    max_attempt_number=max_attempt_number,
+                    sleep_seconds=retry_state.next_action.sleep,
+                    reason=reason,
+                )
+            )
+
+        # niquests 的 Retry 仍然负责 HTTP/transport-level retry。外层 tenacity 只兜底旧版 niquests
+        # 可能抛出的 Python-level exception，避免这些异常直接打断批量请求流程。
         async for attempt in AsyncRetrying(
             sleep=asyncio.sleep,
             stop=stop_after_attempt(max_attempt_number),
@@ -456,10 +490,11 @@ class Booru:
             retry=retry_if_exception_type(Exception),
             before=before_log(logger, logging.DEBUG),
             after=after_log(logger, logging.DEBUG),
-            before_sleep=before_sleep_log(logger, logging.WARNING),
+            before_sleep=log_retry,
             reraise=True,
         ):
             with attempt:
+                start_time = time.perf_counter()
                 response: Response | AsyncResponse = await self.client.request(
                     method=method,
                     url=url,
@@ -479,6 +514,7 @@ class Booru:
                     json=json,
                 )
                 await self.client.gather(response)
+                elapsed = time.perf_counter() - start_time
 
                 if attempt.retry_state.attempt_number < max_attempt_number:
                     response.raise_for_status()
@@ -490,12 +526,24 @@ class Booru:
                     response.__class__ = Response
 
                 response: Response = cast(Response, response)
+                content = getattr(response, "_content", None)
+                if content is None:
+                    content = getattr(response, "content", None)
+                body_size = get_body_size(content)
+                redirects = len(getattr(response, "history", []) or [])
 
                 logger.info(
                     " ".join(
                         [
                             f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
                             f"via {proxy_log}" if proxy_log else "",
+                            format_response_metrics(
+                                attempt_number=attempt.retry_state.attempt_number,
+                                max_attempt_number=max_attempt_number,
+                                elapsed=elapsed,
+                                body_size=body_size,
+                                redirects=redirects,
+                            ),
                         ]
                     ).strip(),
                 )

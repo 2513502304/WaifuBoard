@@ -90,6 +90,9 @@ def format_proxy_log(
     proxies: dict[str, str],
     base_url: str | None = None,
 ) -> str | None:
+    if proxies.get("no_proxy") == "*" and len(proxies) == 1:
+        return "direct"
+
     request_url = merge_base_url(base_url, url) or url
     proxy = select_proxy(request_url, proxies)
 
@@ -100,6 +103,83 @@ def format_proxy_log(
         return "direct"
 
     return redact_proxy_url(proxy)
+
+
+# * =================================================
+
+
+def format_bytes(size: int | None) -> str:
+    """Return a compact human-readable byte size for request logs."""
+    if size is None:
+        return "unknown"
+
+    units = ("B", "KB", "MB", "GB", "TB")
+    value = float(size)
+    unit = units[0]
+
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            break
+        value /= 1024
+
+    if unit == "B":
+        return f"{int(value)} {unit}"
+
+    return f"{value:.1f} {unit}"
+
+
+def format_elapsed(seconds: float) -> str:
+    """Return elapsed seconds using a stable short precision for logs."""
+    return f"{seconds:.3f}s"
+
+
+def format_response_metrics(
+    *,
+    attempt_number: int,
+    max_attempt_number: int,
+    elapsed: float,
+    body_size: int | None,
+    redirects: int,
+    expected_statuses: set[int] | None = None,
+) -> str:
+    metrics = [
+        f"attempt={attempt_number}/{max_attempt_number}",
+        f"elapsed={format_elapsed(elapsed)}",
+        f"bytes={format_bytes(body_size)}",
+        f"redirects={redirects}",
+    ]
+
+    if expected_statuses:
+        statuses = ",".join(str(status) for status in sorted(expected_statuses))
+        metrics.append(f"expected={statuses}")
+
+    return f"({' '.join(metrics)})"
+
+
+def get_body_size(content: object) -> int | None:
+    """Best-effort response body size without forcing another decode pass."""
+    if isinstance(content, bytes | bytearray | memoryview):
+        return len(content)
+    if isinstance(content, str):
+        return len(content.encode("utf-8"))
+    return None
+
+
+def format_retry_log(
+    *,
+    method: str,
+    url: str,
+    proxy_log: str | None,
+    next_attempt: int,
+    max_attempt_number: int,
+    sleep_seconds: float,
+    reason: str,
+) -> str:
+    proxy_part = f" via {proxy_log}" if proxy_log else ""
+    return (
+        f"{method} {url} retry in {format_elapsed(sleep_seconds)}{proxy_part} "
+        f"(attempt={next_attempt}/{max_attempt_number} reason={reason})"
+    )
 
 
 # * =================================================
