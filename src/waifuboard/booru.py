@@ -424,7 +424,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. This does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
@@ -468,15 +468,18 @@ class Booru:
         async def select_request_proxies(
             value: ProxiesType | None | UnsetType,
         ) -> tuple[dict[str, str], str | None, str | None]:
-            # UNSET: 未传入，继承 Booru 实例配置（tuple 每次现挑）
+            # UNSET: 未传入，继承 Booru 实例配置；若实例配置是 tuple，同样会走下方
+            #        tuple 候选流程，跳过 cooldown 中的代理后再现挑一个。
             # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
-            # 其他 : 显式覆盖，tuple 会跳过正在 cooldown 的 proxy 后再现挑
+            # 其他 : 显式覆盖；若是 tuple，也会跳过正在 cooldown 的 proxy 后再现挑。
             if isinstance(value, UnsetType):
                 value = self._proxies or {}
             elif value is None:
                 value = {"no_proxy": "*"}
 
             if isinstance(value, tuple):
+                # tuple 中的候选可以是 str 或 dict；先按候选计算 raw key / redacted log，
+                # 再从未 cooldown 的候选中随机选择，最后归一化成 niquests 需要的 dict 形态。
                 candidates = list(value)
                 if not candidates:
                     return {}, None, None
@@ -522,6 +525,7 @@ class Booru:
                     )
                     await asyncio.sleep(wait_seconds)
 
+            # 单个 str/dict 没有可替代候选；仍然先归一化，再按 raw key 等待 cooldown 结束。
             selected = normalize_proxies(value)
             selected_key = format_proxy_key(url, selected, self.client.base_url)
             selected_log = format_proxy_log(url, selected, self.client.base_url)
@@ -704,7 +708,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
@@ -777,7 +781,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
@@ -850,7 +854,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
@@ -923,7 +927,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
@@ -996,7 +1000,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
@@ -1069,7 +1073,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
@@ -1142,7 +1146,7 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
             max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
             expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
