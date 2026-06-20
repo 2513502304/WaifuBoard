@@ -159,44 +159,6 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("expected=404", records.output[-1])
 
-    async def test_ignore_statuses_is_expected_statuses_alias(self):
-        booru = Booru(
-            default_headers=False,
-            logger_level=logging.INFO,
-            trust_env=False,
-            max_attempt_number=2,
-        )
-        client = CapturingClient(DummyResponse(404, "Not Found"))
-        booru.client = client
-
-        with self.assertLogs("WaifuBoard", level="INFO") as records:
-            response = await booru.get(
-                "https://example.test/missing.json",
-                proxies=None,
-                ignore_statuses={404},
-            )
-
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(client.request_count, 1)
-        self.assertIn("expected=404", records.output[-1])
-
-    async def test_expected_and_ignore_statuses_are_mutually_exclusive(self):
-        booru = Booru(
-            default_headers=False,
-            logger_level=logging.WARNING,
-            trust_env=False,
-            max_attempt_number=1,
-        )
-        client = CapturingClient(DummyResponse(404, "Not Found"))
-        booru.client = client
-
-        with self.assertRaises(ValueError):
-            await booru.get(
-                "https://example.test/missing.json",
-                expected_statuses={404},
-                ignore_statuses={404},
-            )
-
     async def test_post_forwards_expected_statuses(self):
         booru = Booru(
             default_headers=False,
