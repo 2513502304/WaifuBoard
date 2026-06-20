@@ -688,6 +688,10 @@ class DanbooruPosts(DanbooruComponent):
 
             # 下载帖子
             urls = posts["file_url"]  # 帖子 URLs
+            # Danbooru CDN 下载图片时需要帖子页 Referer。
+            referers = posts["id"].apply(
+                lambda post_id: f"{str(self.client.base_url).rstrip('/')}/posts/{post_id}"
+            )
             if md5 is not None:  # 存储文件目录
                 posts_directory = os.path.join(self.directory, f"{md5}")  # 帖子文件目录
                 images_directory = os.path.join(
@@ -706,6 +710,7 @@ class DanbooruPosts(DanbooruComponent):
                 self.client.concurrent_download_file(
                     urls,
                     images_directory,
+                    referers=referers,
                 )
             ):
                 if res is None:
@@ -2446,6 +2451,10 @@ class DanbooruPools(DanbooruComponent):
 
                 # 下载帖子
                 urls = posts["file_url"]  # 帖子 URLs
+                # Danbooru CDN 下载图片时需要帖子页 Referer。
+                referers = posts["id"].apply(
+                    lambda post_id: f"{str(self.client.base_url).rstrip('/')}/posts/{post_id}"
+                )
                 posts_directory = os.path.join(
                     self.directory, f"{name}"
                 )  # 帖子文件目录
@@ -2458,6 +2467,7 @@ class DanbooruPools(DanbooruComponent):
                     self.client.concurrent_download_file(
                         urls,
                         images_directory,
+                        referers=referers,
                     )
                 ):
                     if res is None:

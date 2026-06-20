@@ -1019,6 +1019,8 @@ class Booru:
         self,
         url: str,
         filepath: str,
+        headers: HeadersType | None = None,
+        referer: str | None = None,
     ) -> tuple[str, str] | None:
         """
         下载单个文件到指定路径
@@ -1026,13 +1028,19 @@ class Booru:
         Args:
             url (str): 文件 URL
             filepath (str): 文件存储路径
+            headers (HeadersType, optional): 下载文件时使用的请求头. Defaults to None.
+            referer (str, optional): 下载文件时使用的 Referer 请求头. Defaults to None.
 
         Returns:
             tuple[str, str] | None. 若下载成功，则返回对应的 (url, filepath)；若下载失败，则返回 None
         """
         try:
             # 下载文件
-            response = await self.get(url)
+            response = await self.get(
+                url,
+                headers=dict(headers) if headers is not None else None,
+                referer=referer,
+            )
             # 保存文件
             async with aiofiles.open(filepath, "wb") as f:
                 await f.write(response.content)
@@ -1046,6 +1054,8 @@ class Booru:
         urls: pd.Series,
         directory: str,
         extract_pattern: Callable[[str], str] = os.path.basename,
+        headers: HeadersType | None = None,
+        referers: pd.Series | None = None,
     ) -> AsyncIterable[tuple[str, str] | None]:
         """
         并发下载文件到指定目录，忽略已存在的文件
@@ -1055,12 +1065,16 @@ class Booru:
             urls (pd.Series): 文件 URLs
             directory (str): 文件存储目录
             extract_pattern (Callable[[str], str], optional): 可调用对象，指定从 url 中提取文件名的规则. Defaults to os.path.basename.
+            headers (HeadersType, optional): 下载文件时使用的请求头. Defaults to None.
+            referers (pd.Series, optional): 与 urls 索引对齐的 Referer 请求头. Defaults to None.
 
         Yields:
             tuple[str, str] | None. 若下载成功，则返回对应的 (url, filepath)；若下载失败，则返回 None
         """
         # 预处理 urls 中的空值
         urls = urls.dropna(axis=0, inplace=False, ignore_index=False)
+        if referers is not None:
+            referers = referers.reindex(urls.index)
         # 创建目录
         if not await aioos.path.exists(directory):
             await aioos.makedirs(directory)
@@ -1078,9 +1092,20 @@ class Booru:
                 logger.info(
                     f"Filtered {filter_size} existing files from {patch_size} URLs"
                 )
+            if referers is not None:
+                referers = referers.reindex(urls.index)
         # 检查 URLs 是否为空
         if urls.empty:
             return
+
+        def select_referer(index) -> str | None:
+            if referers is None:
+                return None
+            referer = referers.loc[index]
+            if referer is None or pd.isna(referer):
+                return None
+            return str(referer)
+
         # 创建异步任务列表
         tasks = [
             self.download_file(
@@ -1089,8 +1114,10 @@ class Booru:
                     directory,
                     extract_pattern(url),
                 ),
+                headers=headers,
+                referer=select_referer(index),
             )
-            for url in urls
+            for index, url in urls.items()
         ]
         # 并发执行下载任务
         async for res in self.stream_process_tasks(tasks):

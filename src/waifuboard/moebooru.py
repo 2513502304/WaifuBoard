@@ -340,6 +340,10 @@ class YanderePosts(MoebooruComponent):
 
             # 下载帖子
             urls = posts["file_url"]  # 帖子 URLs
+            # Yandere CDN 不强制要求 Referer；传帖子页是为了贴近正常浏览器流量。
+            referers = posts["id"].apply(
+                lambda post_id: f"{str(self.client.base_url).rstrip('/')}/post/show/{post_id}"
+            )
             posts_directory = os.path.join(
                 self.directory, f"{tags if tags != '' else 'all'}"
             )  # 帖子文件目录
@@ -350,6 +354,7 @@ class YanderePosts(MoebooruComponent):
                 self.client.concurrent_download_file(
                     urls,
                     images_directory,
+                    referers=referers,
                 )
             ):
                 if res is None:
@@ -860,6 +865,10 @@ class YanderePools(MoebooruComponent):
 
                 # 下载帖子
                 urls = posts["file_url"]  # 帖子 URLs
+                # Yandere CDN 不强制要求 Referer；传帖子页是为了贴近正常浏览器流量。
+                referers = posts["id"].apply(
+                    lambda post_id: f"{str(self.client.base_url).rstrip('/')}/post/show/{post_id}"
+                )
                 posts_directory = os.path.join(
                     self.directory, f"{name}"
                 )  # 帖子文件目录
@@ -872,6 +881,7 @@ class YanderePools(MoebooruComponent):
                     self.client.concurrent_download_file(
                         urls,
                         images_directory,
+                        referers=referers,
                     )
                 ):
                     if res is None:
