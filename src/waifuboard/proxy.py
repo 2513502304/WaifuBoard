@@ -29,16 +29,16 @@ class ProxyCooldownTracker:
         self,
         *,
         threshold: int | None = None,
-        cooldown: int | float = 600,
+        cooldown_seconds: int | float = 600,
         clock: typing.Callable[[], float] = time.monotonic,
     ):
         if threshold is not None and threshold < 1:
             raise ValueError("proxy cooldown threshold must be None or >= 1")
-        if cooldown < 0:
-            raise ValueError("proxy cooldown must be >= 0")
+        if cooldown_seconds < 0:
+            raise ValueError("proxy cooldown seconds must be >= 0")
 
         self.threshold = threshold
-        self.cooldown = float(cooldown)
+        self.cooldown_seconds = float(cooldown_seconds)
         self._clock = clock
         self._failures: dict[str, deque[bool]] = {}
         self._cooldown_until: dict[str, float] = {}
@@ -87,7 +87,7 @@ class ProxyCooldownTracker:
             return False
 
         self._failures.pop(proxy, None)
-        self._cooldown_until[proxy] = self._clock() + self.cooldown
+        self._cooldown_until[proxy] = self._clock() + self.cooldown_seconds
         return True
 
 

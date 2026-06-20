@@ -140,6 +140,9 @@ __all__ = [
 ]
 
 
+DEFAULT_PROXY_COOLDOWN_STATUSES = frozenset({429, 502, 503, 504})
+
+
 class Booru:
     """
     Base Booru Image Board API
@@ -162,8 +165,8 @@ class Booru:
         retries: RetryType = 3,
         max_attempt_number: int | None = 3,
         proxy_cooldown_threshold: int | None = None,
-        proxy_cooldown: int | float = 600,
-        proxy_cooldown_statuses: Collection[int] | None = (429, 502, 503, 504),
+        proxy_cooldown_seconds: int | float = 600,
+        proxy_cooldown_statuses: Collection[int] | None = DEFAULT_PROXY_COOLDOWN_STATUSES,
         rate_limit: int | float | None = 10.0,
         timeout: TimeoutType | None = None,
         multiplexed: bool = True,
@@ -206,8 +209,8 @@ class Booru:
             retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 3.
             max_attempt_number (int, optional): Default outer retry budget (tenacity-level) for request methods. Used when a request method does not pass its own max_attempt_number. If both this and the request-level value are None, the underlying call falls back to a single attempt. Defaults to 3.
             proxy_cooldown_threshold (int, optional): Consecutive per-proxy failures before temporarily cooling down that proxy. Set to None to disable proxy cooldown. Defaults to None.
-            proxy_cooldown (int | float, optional): Seconds a failed proxy stays unavailable after reaching proxy_cooldown_threshold. Defaults to 600.
-            proxy_cooldown_statuses (Collection[int], optional): HTTP statuses that count as proxy failures when proxy cooldown is enabled. Set to None to count only transport exceptions. Defaults to (429, 502, 503, 504).
+            proxy_cooldown_seconds (int | float, optional): Seconds a failed proxy stays unavailable after reaching proxy_cooldown_threshold. Defaults to 600.
+            proxy_cooldown_statuses (Collection[int], optional): HTTP statuses that count as proxy failures when proxy cooldown is enabled. This is a proxy/IP health policy, not niquests' HTTP retry policy: 429 can indicate IP-level throttling, while 502/503/504 often indicate gateway or proxy-path failures. 413 is intentionally excluded because a too-large request is not a proxy health signal. Set to None to disable HTTP-status-based proxy cooldown; transport exceptions can still trigger cooldown when proxy_cooldown_threshold is set. Defaults to (429, 502, 503, 504).
             rate_limit (int | float, optional): Maximum requests per second. Defaults to 10.0.
             timeout (TimeoutType, optional): Default timeout configuration to be used if no timeout is provided in exposed methods. Defaults to None.
             multiplexed (bool, optional): Enable or disable concurrent request when the remote host support HTTP/2 onward. Defaults to True.
@@ -256,13 +259,15 @@ class Booru:
 
         if retries is not None:
             if isinstance(retries, int):
+                # 这是 HTTP retry 策略：urllib3/niquests 把 413/429/503 视为
+                # Retry-After 相关状态码。它和 proxy cooldown 的健康判断不是同一层语义。
                 retries = Retry(
                     total=retries,
                     redirect=True,
                     allowed_methods=frozenset(
                         ["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE"]
                     ),
-                    status_forcelist=frozenset([413, 429, 503]),
+                    status_forcelist=Retry.RETRY_AFTER_STATUS_CODES,
                     backoff_factor=1,
                     backoff_max=10,
                     raise_on_redirect=True,
@@ -333,7 +338,7 @@ class Booru:
         self._max_attempt_number: int | None = max_attempt_number
         self._proxy_cooldown = ProxyCooldownTracker(
             threshold=proxy_cooldown_threshold,
-            cooldown=proxy_cooldown,
+            cooldown_seconds=proxy_cooldown_seconds,
         )
         self._proxy_cooldown_statuses = set(proxy_cooldown_statuses or ())
         self.client.trust_env = trust_env
@@ -492,11 +497,11 @@ class Booru:
                 ]
 
                 while True:
-                    available = []
-                    unavailable_keys = []
+                    available_candidates = []
+                    cooling_down_keys = []
                     for candidate, proxy_resolution in resolved_candidates:
                         if self._proxy_cooldown.is_available(proxy_resolution.key):
-                            available.append((candidate, proxy_resolution))
+                            available_candidates.append((candidate, proxy_resolution))
                         else:
                             remaining = self._proxy_cooldown.remaining(
                                 proxy_resolution.key or ""
@@ -506,13 +511,13 @@ class Booru:
                                 f"remaining={format_elapsed(remaining)}"
                             )
                             if proxy_resolution.key is not None:
-                                unavailable_keys.append(proxy_resolution.key)
+                                cooling_down_keys.append(proxy_resolution.key)
 
-                    if available:
-                        selected, proxy_resolution = random.choice(available)
+                    if available_candidates:
+                        selected, proxy_resolution = random.choice(available_candidates)
                         return selected, proxy_resolution.key, proxy_resolution.log
 
-                    wait_seconds = self._proxy_cooldown.next_available_in(unavailable_keys)
+                    wait_seconds = self._proxy_cooldown.next_available_in(cooling_down_keys)
                     logger.warning(
                         "All proxies are cooling down; waiting "
                         f"{format_elapsed(wait_seconds)} before retrying proxy selection."
@@ -553,7 +558,7 @@ class Booru:
                 logger.warning(
                     f"proxy.cooldown proxy={proxy_log} "
                     f"failures={self._proxy_cooldown.threshold} "
-                    f"cooldown={format_elapsed(self._proxy_cooldown.cooldown)}"
+                    f"cooldown={format_elapsed(self._proxy_cooldown.cooldown_seconds)}"
                 )
 
         def format_request_retry_log(retry_state) -> str:
