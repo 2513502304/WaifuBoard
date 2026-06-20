@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pandas as pd
 
 from waifuboard.booru import Booru
-from waifuboard.danbooru import DanbooruPosts
-from waifuboard.moebooru import YanderePosts
+from waifuboard.danbooru import DanbooruPools, DanbooruPosts
+from waifuboard.moebooru import YanderePools, YanderePosts
 
 
 class RecordingDownloadBooru(Booru):
@@ -127,6 +127,51 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_concurrent_download_file_keeps_duplicate_index_referers_positional(self):
+        booru = RecordingDownloadBooru()
+        urls = pd.Series(
+            [
+                "https://cdn.example.test/a.jpg",
+                "https://cdn.example.test/b.jpg",
+            ],
+            index=[1, 1],
+        )
+        referers = pd.Series(
+            [
+                "https://example.test/posts/a",
+                "https://example.test/posts/b",
+            ],
+            index=[1, 1],
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            results = [
+                result
+                async for result in booru.concurrent_download_file(
+                    urls,
+                    directory,
+                    referers=referers,
+                )
+            ]
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(
+            {
+                (call["url"], call["referer"])
+                for call in booru.download_calls
+            },
+            {
+                (
+                    "https://cdn.example.test/a.jpg",
+                    "https://example.test/posts/a",
+                ),
+                (
+                    "https://cdn.example.test/b.jpg",
+                    "https://example.test/posts/b",
+                ),
+            },
+        )
+
 
 class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
     async def test_danbooru_posts_download_uses_post_page_referers(self):
@@ -150,6 +195,35 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
         referers = client.download_calls[0]["referers"]
         self.assertEqual(referers.tolist(), ["https://danbooru.donmai.us/posts/123"])
 
+    async def test_danbooru_pools_download_uses_post_page_referers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeDownloadClient(directory, "https://danbooru.donmai.us/")
+            pools = DanbooruPools(client)
+
+            async def fake_index(**kwargs):
+                yield [{"id": 1, "name": "pool", "post_count": 1, "post_ids": [123]}]
+
+            async def fake_show(**kwargs):
+                return [
+                    {
+                        "id": 123,
+                        "file_url": "https://cdn.donmai.us/original/123.jpg",
+                        "tag_string": "tag",
+                    }
+                ]
+
+            async def fake_batch_process_tasks(tasks):
+                return [await task for task in tasks]
+
+            pools.index = fake_index
+            client.posts = SimpleNamespace(show=fake_show)
+            client.batch_process_tasks = fake_batch_process_tasks
+
+            await pools.download()
+
+        referers = client.download_calls[0]["referers"]
+        self.assertEqual(referers.tolist(), ["https://danbooru.donmai.us/posts/123"])
+
     async def test_yandere_posts_download_uses_post_page_referers(self):
         with tempfile.TemporaryDirectory() as directory:
             client = FakeDownloadClient(directory, "https://yande.re")
@@ -167,6 +241,31 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
             posts.list = fake_list
 
             await posts.download()
+
+        referers = client.download_calls[0]["referers"]
+        self.assertEqual(referers.tolist(), ["https://yande.re/post/show/456"])
+
+    async def test_yandere_pools_download_uses_post_page_referers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeDownloadClient(directory, "https://yande.re")
+            pools = YanderePools(client)
+
+            async def fake_list_pools(**kwargs):
+                yield [{"id": 1, "name": "pool"}]
+
+            async def fake_list_posts(**kwargs):
+                return [
+                    {
+                        "id": 456,
+                        "file_url": "https://files.yande.re/image/456.jpg",
+                        "tags": "tag",
+                    }
+                ]
+
+            pools.list_pools = fake_list_pools
+            pools.list_posts = fake_list_posts
+
+            await pools.download()
 
         referers = client.download_calls[0]["referers"]
         self.assertEqual(referers.tolist(), ["https://yande.re/post/show/456"])

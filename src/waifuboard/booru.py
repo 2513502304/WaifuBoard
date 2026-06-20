@@ -1071,10 +1071,32 @@ class Booru:
         Yields:
             tuple[str, str] | None. 若下载成功，则返回对应的 (url, filepath)；若下载失败，则返回 None
         """
-        # 预处理 urls 中的空值
-        urls = urls.dropna(axis=0, inplace=False, ignore_index=False)
-        if referers is not None:
-            referers = referers.reindex(urls.index)
+        def select_referers() -> list[object | None]:
+            if referers is None:
+                return [None] * len(urls)
+            if len(referers) == len(urls):
+                return list(referers)
+
+            values: list[object | None] = []
+            for index in urls.index:
+                referer = referers.loc[index]
+                if isinstance(referer, pd.Series):
+                    referer = referer.iloc[0] if not referer.empty else None
+                values.append(referer)
+            return values
+
+        def normalize_referer(referer: object | None) -> str | None:
+            if referer is None:
+                return None
+            if bool(pd.isna(referer)):
+                return None
+            return str(referer)
+
+        download_records = [
+            (url, referer)
+            for url, referer in zip(urls, select_referers())
+            if not bool(pd.isna(url))
+        ]
         # 创建目录
         if not await aioos.path.exists(directory):
             await aioos.makedirs(directory)
@@ -1083,28 +1105,22 @@ class Booru:
             # 获取已有文件列表
             files = await aioos.listdir(directory)
             # 批 URLs 大小
-            patch_size = urls.size
+            patch_size = len(download_records)
             # 过滤已有文件
-            urls = urls[~urls.apply(lambda x: extract_pattern(x) in files)]
+            download_records = [
+                (url, referer)
+                for url, referer in download_records
+                if extract_pattern(url) not in files
+            ]
             # 已过滤文件数量
-            filter_size = patch_size - urls.size
+            filter_size = patch_size - len(download_records)
             if filter_size > 0:
                 logger.info(
                     f"Filtered {filter_size} existing files from {patch_size} URLs"
                 )
-            if referers is not None:
-                referers = referers.reindex(urls.index)
         # 检查 URLs 是否为空
-        if urls.empty:
+        if not download_records:
             return
-
-        def select_referer(index) -> str | None:
-            if referers is None:
-                return None
-            referer = referers.loc[index]
-            if referer is None or pd.isna(referer):
-                return None
-            return str(referer)
 
         # 创建异步任务列表
         tasks = [
@@ -1115,9 +1131,9 @@ class Booru:
                     extract_pattern(url),
                 ),
                 headers=headers,
-                referer=select_referer(index),
+                referer=normalize_referer(referer),
             )
-            for index, url in urls.items()
+            for url, referer in download_records
         ]
         # 并发执行下载任务
         async for res in self.stream_process_tasks(tasks):
