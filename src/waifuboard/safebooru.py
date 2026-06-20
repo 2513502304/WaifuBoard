@@ -13,7 +13,7 @@ from niquests.exceptions import RequestException
 from lxml import etree
 
 from .booru import Booru, BooruComponent
-from .utils import logger
+from .observability import logger
 
 __all__ = [
     # base classes

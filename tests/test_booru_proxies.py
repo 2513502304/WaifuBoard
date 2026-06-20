@@ -7,7 +7,8 @@ from niquests.exceptions import HTTPError
 from niquests.exceptions import RequestException
 
 from waifuboard.booru import Booru, BodyFormValueType, QueryParameterScalarType
-from waifuboard.utils import ProxyCooldownTracker, format_bytes, format_proxy_key
+from waifuboard.observability import format_bytes
+from waifuboard.proxy import ProxyCooldownTracker, format_proxy_key, resolve_proxy
 
 
 class DummyRequest:
@@ -88,6 +89,15 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
                 {"https": "http://bob:secret@proxy.test:8080"},
             ),
         )
+
+    def test_resolve_proxy_returns_raw_key_and_redacted_log(self):
+        resolution = resolve_proxy(
+            "https://example.test/data.json",
+            {"https": "http://alice:secret@proxy.test:8080"},
+        )
+
+        self.assertEqual(resolution.key, "http://alice:secret@proxy.test:8080")
+        self.assertEqual(resolution.log, "http://***:***@proxy.test:8080")
 
     def test_proxy_cooldown_tracker_success_resets_failure_streak(self):
         tracker = ProxyCooldownTracker(threshold=2, cooldown=60, clock=lambda: 0.0)

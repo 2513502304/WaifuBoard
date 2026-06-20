@@ -80,18 +80,16 @@ from tenacity.wait import wait_exponential_jitter
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
-from .utils import (
-    normalize_filepath,
+from .observability import (
     logger,
-    format_proxy_log,
-    format_proxy_key,
     format_response_metrics,
     format_retry_log,
     format_elapsed,
     get_body_size,
-    ProxyCooldownTracker,
     before_sleep_log,
 )
+from .proxy import ProxyCooldownTracker, normalize_proxy, resolve_proxy
+from .utils import normalize_filepath
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
 # values; keep WaifuBoard's wrapper types explicit when we rely on that behavior.
@@ -460,14 +458,10 @@ class Booru:
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        def normalize_proxies(value: ProxiesType | dict[str, str]) -> dict[str, str]:
-            if isinstance(value, str):
-                return {"http": value, "https": value}
-            return cast(dict[str, str], value)
-
         async def select_request_proxies(
             value: ProxiesType | None | UnsetType,
         ) -> tuple[dict[str, str], str | None, str | None]:
+            """Select request-level proxies and return niquests proxies plus tracking metadata."""
             # UNSET: 未传入，继承 Booru 实例配置；若实例配置是 tuple，同样会走下方
             #        tuple 候选流程，跳过 cooldown 中的代理后再现挑一个。
             # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
@@ -478,45 +472,45 @@ class Booru:
                 value = {"no_proxy": "*"}
 
             if isinstance(value, tuple):
-                # tuple 中的候选可以是 str 或 dict；先按候选计算 raw key / redacted log，
-                # 再从未 cooldown 的候选中随机选择，最后归一化成 niquests 需要的 dict 形态。
+                # tuple 中的候选可以是 str 或 dict；每个候选只做一次 normalize + resolve，
+                # 同时得到 raw key 与 redacted log，避免 key/log 两条路径重复 select_proxy。
                 candidates = list(value)
                 if not candidates:
                     return {}, None, None
 
-                candidate_keys = [
-                    format_proxy_key(url, normalize_proxies(candidate), self.client.base_url)
-                    for candidate in candidates
-                ]
-                candidate_logs = [
-                    format_proxy_log(url, normalize_proxies(candidate), self.client.base_url)
+                def resolve_candidate(candidate: ProxyType):
+                    """Normalize and resolve one proxy candidate exactly once."""
+                    normalized = normalize_proxy(candidate)
+                    return (
+                        normalized,
+                        resolve_proxy(url, normalized, self.client.base_url),
+                    )
+
+                resolved_candidates = [
+                    resolve_candidate(candidate)
                     for candidate in candidates
                 ]
 
                 while True:
                     available = []
                     unavailable_keys = []
-                    for candidate, candidate_key, candidate_log in zip(
-                        candidates, candidate_keys, candidate_logs
-                    ):
-                        if self._proxy_cooldown.is_available(candidate_key):
-                            available.append(candidate)
+                    for candidate, proxy_resolution in resolved_candidates:
+                        if self._proxy_cooldown.is_available(proxy_resolution.key):
+                            available.append((candidate, proxy_resolution))
                         else:
-                            remaining = self._proxy_cooldown.remaining(candidate_key or "")
+                            remaining = self._proxy_cooldown.remaining(
+                                proxy_resolution.key or ""
+                            )
                             logger.debug(
-                                f"proxy.skip proxy={candidate_log} reason=cooldown "
+                                f"proxy.skip proxy={proxy_resolution.log} reason=cooldown "
                                 f"remaining={format_elapsed(remaining)}"
                             )
-                            if candidate_key is not None:
-                                unavailable_keys.append(candidate_key)
+                            if proxy_resolution.key is not None:
+                                unavailable_keys.append(proxy_resolution.key)
 
                     if available:
-                        selected = normalize_proxies(random.choice(available))
-                        return (
-                            selected,
-                            format_proxy_key(url, selected, self.client.base_url),
-                            format_proxy_log(url, selected, self.client.base_url),
-                        )
+                        selected, proxy_resolution = random.choice(available)
+                        return selected, proxy_resolution.key, proxy_resolution.log
 
                     wait_seconds = self._proxy_cooldown.next_available_in(unavailable_keys)
                     logger.warning(
@@ -526,18 +520,17 @@ class Booru:
                     await asyncio.sleep(wait_seconds)
 
             # 单个 str/dict 没有可替代候选；仍然先归一化，再按 raw key 等待 cooldown 结束。
-            selected = normalize_proxies(value)
-            selected_key = format_proxy_key(url, selected, self.client.base_url)
-            selected_log = format_proxy_log(url, selected, self.client.base_url)
-            while not self._proxy_cooldown.is_available(selected_key):
-                remaining = self._proxy_cooldown.remaining(selected_key or "")
+            selected = normalize_proxy(cast(dict[str, str] | str, value))
+            proxy_resolution = resolve_proxy(url, selected, self.client.base_url)
+            while not self._proxy_cooldown.is_available(proxy_resolution.key):
+                remaining = self._proxy_cooldown.remaining(proxy_resolution.key or "")
                 logger.warning(
-                    f"Proxy {selected_log} is cooling down; waiting "
+                    f"Proxy {proxy_resolution.log} is cooling down; waiting "
                     f"{format_elapsed(remaining)} before retrying proxy selection."
                 )
                 await asyncio.sleep(remaining)
 
-            return selected, selected_key, selected_log
+            return selected, proxy_resolution.key, proxy_resolution.log
 
         # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
         if max_attempt_number is None:
@@ -553,6 +546,8 @@ class Booru:
         proxy_log: str | None = None
 
         def record_proxy_outcome(*, failed: bool) -> None:
+            """Record the selected proxy outcome and emit a cooldown warning when needed."""
+            # proxy_key 是未脱敏的内部身份，proxy_log 是脱敏后的日志值；两者不能混用。
             cooled_down = self._proxy_cooldown.record(proxy_key, failed=failed)
             if cooled_down:
                 logger.warning(
@@ -562,6 +557,7 @@ class Booru:
                 )
 
         def format_request_retry_log(retry_state) -> str:
+            """Format the outer tenacity retry log with request and proxy context."""
             if retry_state.outcome is None:
                 raise RuntimeError("format_request_retry_log() called before outcome was set")
             if retry_state.next_action is None:
@@ -569,6 +565,8 @@ class Booru:
                     "format_request_retry_log() called before next_action was set"
                 )
 
+            # before_sleep 既可能收到异常，也可能收到 retry predicate 触发的返回值。
+            # 当前 Booru 外层 retry 只配置 exception retry，但这里保留上游 before_sleep_log 的完整分支。
             if retry_state.outcome.failed:
                 exc = retry_state.outcome.exception()
                 reason = f"{exc.__class__.__name__}: {exc}"
