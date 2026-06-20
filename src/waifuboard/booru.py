@@ -69,7 +69,7 @@ from niquests.hooks import (
     AsyncTokenBucketLimiter,
 )
 from niquests.exceptions import RequestException
-from tenacity import AsyncRetrying, RetryCallState, RetryError, TryAgain, retry
+from tenacity import AsyncRetrying, RetryError, TryAgain, retry
 from tenacity.after import after_log
 from tenacity.before import before_log
 # from tenacity.before_sleep import before_sleep_log
@@ -90,6 +90,7 @@ from .utils import (
     format_elapsed,
     get_body_size,
     ProxyCooldownTracker,
+    before_sleep_log,
 )
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
@@ -562,11 +563,13 @@ class Booru:
                     f"cooldown={format_elapsed(self._proxy_cooldown.cooldown)}"
                 )
 
-        def log_retry(retry_state: RetryCallState) -> None:
+        def format_request_retry_log(retry_state) -> str:
             if retry_state.outcome is None:
-                raise RuntimeError("log_retry() called before outcome was set")
+                raise RuntimeError("format_request_retry_log() called before outcome was set")
             if retry_state.next_action is None:
-                raise RuntimeError("log_retry() called before next_action was set")
+                raise RuntimeError(
+                    "format_request_retry_log() called before next_action was set"
+                )
 
             if retry_state.outcome.failed:
                 exc = retry_state.outcome.exception()
@@ -574,16 +577,14 @@ class Booru:
             else:
                 reason = f"returned {retry_state.outcome.result()}"
 
-            logger.warning(
-                format_retry_log(
-                    method=method,
-                    url=url,
-                    proxy_log=proxy_log,
-                    next_attempt=retry_state.attempt_number + 1,
-                    max_attempt_number=max_attempt_number,
-                    sleep_seconds=retry_state.next_action.sleep,
-                    reason=reason,
-                )
+            return format_retry_log(
+                method=method,
+                url=url,
+                proxy_log=proxy_log,
+                next_attempt=retry_state.attempt_number + 1,
+                max_attempt_number=max_attempt_number,
+                sleep_seconds=retry_state.next_action.sleep,
+                reason=reason,
             )
 
         # niquests 的 Retry 仍然负责 HTTP/transport-level retry。外层 tenacity 只兜底旧版 niquests
@@ -595,7 +596,11 @@ class Booru:
             retry=retry_if_exception_type(Exception),
             before=before_log(logger, logging.DEBUG),
             after=after_log(logger, logging.DEBUG),
-            before_sleep=log_retry,
+            before_sleep=before_sleep_log(
+                logger,
+                logging.WARNING,
+                formatter=format_request_retry_log,
+            ),
             reraise=True,
         ):
             with attempt:

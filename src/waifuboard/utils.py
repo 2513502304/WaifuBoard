@@ -159,6 +159,8 @@ def format_proxy_log(
     proxies: dict[str, str],
     base_url: str | None = None,
 ) -> str | None:
+    # {"no_proxy": "*"} 是 WaifuBoard 在 request-level proxies=None 时注入的
+    # 显式直连哨兵；niquests.select_proxy() 对它返回 None，因此需要先识别为 direct。
     if proxies.get("no_proxy") == "*" and len(proxies) == 1:
         return "direct"
 
@@ -168,6 +170,8 @@ def format_proxy_log(
     if proxy is None:
         return None
 
+    # 空字符串来自 requests/niquests 风格的 scheme-level 直连配置，
+    # 例如 {"https": ""} 命中了当前请求 scheme。
     if proxy == "":
         return "direct"
 
@@ -180,6 +184,8 @@ def format_proxy_key(
     base_url: str | None = None,
 ) -> str | None:
     """Return the internal cooldown key without redacting proxy credentials."""
+    # {"no_proxy": "*"} 是 WaifuBoard 在 request-level proxies=None 时注入的
+    # 显式直连哨兵；niquests.select_proxy() 对它返回 None，因此需要先识别为 direct。
     if proxies.get("no_proxy") == "*" and len(proxies) == 1:
         return "direct"
 
@@ -189,6 +195,8 @@ def format_proxy_key(
     if proxy is None:
         return None
 
+    # 空字符串来自 requests/niquests 风格的 scheme-level 直连配置，
+    # 例如 {"https": ""} 命中了当前请求 scheme。
     if proxy == "":
         return "direct"
 
@@ -288,6 +296,7 @@ def before_sleep_log(
     log_level: int,
     exc_info: bool = False,
     sec_format: str = "%.3g",
+    formatter: typing.Callable[["RetryCallState"], str] | None = None,
 ) -> typing.Callable[["RetryCallState"], None]:
     """Before sleep strategy that logs to some logger the attempt, with attempt-counter progress."""
 
@@ -331,6 +340,14 @@ def before_sleep_log(
             if max_attempt is not None
             else f"{next_attempt}"
         )
+        # * === 改动结束 ===
+
+        # * === 改动开始 ===
+        # 调用方可以保留 tenacity before_sleep 时机与异常处理语义，同时替换为业务化日志格式。
+        # Booru.request 用它输出 method/url/proxy/reason，避免另起一个重复的 log_retry 回调。
+        if formatter is not None:
+            logger.log(log_level, formatter(retry_state), exc_info=local_exc_info)
+            return
         # * === 改动结束 ===
 
         logger.log(
