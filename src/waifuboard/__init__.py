@@ -4,6 +4,7 @@ from .booru import Booru
 from .danbooru import DanbooruClient
 from .safebooru import SafebooruClient
 from .moebooru import YandereClient
+from .typing import DownloadItem, DownloadResult, PageResult
 
 # Package metadata
 __author__ = "ChijiangZhai"
@@ -16,4 +17,7 @@ __all__ = [
     "DanbooruClient",
     "SafebooruClient",
     "YandereClient",
+    "DownloadItem",
+    "DownloadResult",
+    "PageResult",
 ]
