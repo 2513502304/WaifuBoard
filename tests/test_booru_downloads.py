@@ -8,6 +8,7 @@ import pandas as pd
 from waifuboard.booru import Booru
 from waifuboard.danbooru import DanbooruPools, DanbooruPosts
 from waifuboard.moebooru import YanderePools, YanderePosts
+from waifuboard.typing import DownloadItem, DownloadResult, PageResult
 
 
 class RecordingDownloadBooru(Booru):
@@ -20,16 +21,16 @@ class RecordingDownloadBooru(Booru):
         )
         self.download_calls = []
 
-    async def download_file(self, url, filepath, headers=None, referer=None):
+    async def download_file(self, item):
         self.download_calls.append(
             {
-                "url": url,
-                "filepath": filepath,
-                "headers": headers,
-                "referer": referer,
+                "url": item.url,
+                "filepath": item.filepath,
+                "headers": item.headers,
+                "referer": item.referer,
             }
         )
-        return (url, filepath)
+        return DownloadResult(item=item, filepath=item.filepath)
 
 
 class FakeDownloadClient:
@@ -37,25 +38,54 @@ class FakeDownloadClient:
         self.directory = directory
         self.base_url = base_url
         self.download_calls = []
+        self.saved_raws = []
+        self.saved_tags = []
 
     async def concurrent_download_file(
         self,
-        urls,
-        directory,
-        extract_pattern=None,
-        headers=None,
-        referers=None,
+        items,
     ):
+        items = list(items)
         self.download_calls.append(
             {
-                "urls": urls,
-                "directory": directory,
-                "headers": headers,
-                "referers": referers,
+                "items": items,
             }
         )
-        if False:
-            yield None
+        for item in items:
+            yield DownloadResult(item=item, filepath=item.filepath)
+
+    async def save_raws(self, raws, directory, filename, overwrite=False):
+        self.saved_raws.append(
+            {
+                "raws": raws,
+                "directory": directory,
+                "filename": filename,
+                "overwrite": overwrite,
+            }
+        )
+        return (raws, directory, filename)
+
+    async def save_tags(self, tag, directory, filename, overwrite=False):
+        self.saved_tags.append(
+            {
+                "tag": tag,
+                "directory": directory,
+                "filename": filename,
+                "overwrite": overwrite,
+            }
+        )
+        return (tag, directory, filename)
+
+
+class ReversingDownloadClient(FakeDownloadClient):
+    async def concurrent_download_file(
+        self,
+        items,
+    ):
+        items = list(items)
+        self.download_calls.append({"items": items})
+        for item in reversed(items):
+            yield DownloadResult(item=item, filepath=item.filepath)
 
 
 class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
@@ -76,44 +106,42 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             filepath = Path(directory) / "image.jpg"
-            result = await booru.download_file(
-                "https://cdn.example.test/image.jpg",
-                str(filepath),
+            item = DownloadItem(
+                url="https://cdn.example.test/image.jpg",
+                filepath=str(filepath),
                 referer="https://example.test/posts/1",
             )
+            result = await booru.download_file(item)
 
-            self.assertEqual(result, ("https://cdn.example.test/image.jpg", str(filepath)))
+            self.assertEqual(result, DownloadResult(item=item, filepath=str(filepath)))
             self.assertEqual(filepath.read_bytes(), b"image-bytes")
 
         self.assertEqual(calls[0]["referer"], "https://example.test/posts/1")
 
-    async def test_concurrent_download_file_keeps_referers_aligned_after_filter(self):
+    async def test_concurrent_download_file_uses_download_items_after_filter(self):
         booru = RecordingDownloadBooru()
-        urls = pd.Series(
-            {
-                10: "https://cdn.example.test/10.jpg",
-                20: "https://cdn.example.test/20.jpg",
-            }
-        )
-        referers = pd.Series(
-            {
-                10: "https://example.test/posts/10",
-                20: "https://example.test/posts/20",
-            }
-        )
 
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "10.jpg").write_bytes(b"exists")
+            items = [
+                DownloadItem(
+                    url="https://cdn.example.test/10.jpg",
+                    filepath=str(Path(directory) / "10.jpg"),
+                    referer="https://example.test/posts/10",
+                ),
+                DownloadItem(
+                    url="https://cdn.example.test/20.jpg",
+                    filepath=str(Path(directory) / "20.jpg"),
+                    referer="https://example.test/posts/20",
+                ),
+            ]
             results = [
                 result
-                async for result in booru.concurrent_download_file(
-                    urls,
-                    directory,
-                    referers=referers,
-                )
+                async for result in booru.concurrent_download_file(items)
             ]
 
         self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], DownloadResult)
         self.assertEqual(
             {
                 (call["url"], call["referer"])
@@ -127,34 +155,36 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_concurrent_download_file_keeps_duplicate_index_referers_positional(self):
+    async def test_concurrent_download_file_preserves_item_identity(self):
         booru = RecordingDownloadBooru()
-        urls = pd.Series(
-            [
-                "https://cdn.example.test/a.jpg",
-                "https://cdn.example.test/b.jpg",
-            ],
-            index=[1, 1],
-        )
-        referers = pd.Series(
-            [
-                "https://example.test/posts/a",
-                "https://example.test/posts/b",
-            ],
-            index=[1, 1],
-        )
 
         with tempfile.TemporaryDirectory() as directory:
+            items = [
+                DownloadItem(
+                    url="https://cdn.example.test/a.jpg",
+                    filepath=str(Path(directory) / "a.jpg"),
+                    referer="https://example.test/posts/a",
+                    raw=pd.DataFrame([{"id": "a"}]),
+                    tags="tag_a",
+                ),
+                DownloadItem(
+                    url="https://cdn.example.test/b.jpg",
+                    filepath=str(Path(directory) / "b.jpg"),
+                    referer="https://example.test/posts/b",
+                    raw=pd.DataFrame([{"id": "b"}]),
+                    tags="tag_b",
+                ),
+            ]
             results = [
                 result
-                async for result in booru.concurrent_download_file(
-                    urls,
-                    directory,
-                    referers=referers,
-                )
+                async for result in booru.concurrent_download_file(items)
             ]
 
         self.assertEqual(len(results), 2)
+        self.assertEqual(
+            {result.item.tags for result in results if result is not None},
+            {"tag_a", "tag_b"},
+        )
         self.assertEqual(
             {
                 (call["url"], call["referer"])
@@ -170,6 +200,40 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
                     "https://example.test/posts/b",
                 ),
             },
+        )
+
+    async def test_concurrent_fetch_page_returns_page_result_without_mutating_params(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        params = {"tags": "cat"}
+
+        async def fake_fetch_page(api, *, params=None, **kwargs):
+            return [{"page": params["page"], "tags": params["tags"]}]
+
+        booru.fetch_page = fake_fetch_page
+
+        results = [
+            result
+            async for result in booru.concurrent_fetch_page(
+                "https://example.test/posts.json",
+                params=params,
+                start_page=1,
+                end_page=2,
+                page_key="page",
+            )
+        ]
+
+        self.assertEqual(params, {"tags": "cat"})
+        self.assertEqual(
+            {result.page for result in results if result is not None},
+            {1, 2},
+        )
+        self.assertTrue(
+            all(isinstance(result, PageResult) for result in results if result is not None)
         )
 
 
@@ -192,8 +256,8 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
 
             await posts.download()
 
-        referers = client.download_calls[0]["referers"]
-        self.assertEqual(referers.tolist(), ["https://danbooru.donmai.us/posts/123"])
+        items = client.download_calls[0]["items"]
+        self.assertEqual([item.referer for item in items], ["https://danbooru.donmai.us/posts/123"])
 
     async def test_danbooru_pools_download_uses_post_page_referers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -221,8 +285,8 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
 
             await pools.download()
 
-        referers = client.download_calls[0]["referers"]
-        self.assertEqual(referers.tolist(), ["https://danbooru.donmai.us/posts/123"])
+        items = client.download_calls[0]["items"]
+        self.assertEqual([item.referer for item in items], ["https://danbooru.donmai.us/posts/123"])
 
     async def test_yandere_posts_download_uses_post_page_referers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -242,8 +306,8 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
 
             await posts.download()
 
-        referers = client.download_calls[0]["referers"]
-        self.assertEqual(referers.tolist(), ["https://yande.re/post/show/456"])
+        items = client.download_calls[0]["items"]
+        self.assertEqual([item.referer for item in items], ["https://yande.re/post/show/456"])
 
     async def test_yandere_pools_download_uses_post_page_referers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -267,8 +331,45 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
 
             await pools.download()
 
-        referers = client.download_calls[0]["referers"]
-        self.assertEqual(referers.tolist(), ["https://yande.re/post/show/456"])
+        items = client.download_calls[0]["items"]
+        self.assertEqual([item.referer for item in items], ["https://yande.re/post/show/456"])
+
+    async def test_danbooru_posts_download_saves_sidecars_from_download_item(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ReversingDownloadClient(directory, "https://danbooru.donmai.us/")
+            posts = DanbooruPosts(client)
+
+            async def fake_index(**kwargs):
+                yield [
+                    {
+                        "id": 1,
+                        "file_url": "https://cdn.donmai.us/original/1.jpg",
+                        "tag_string": "first_tag",
+                    },
+                    {
+                        "id": 2,
+                        "file_url": "https://cdn.donmai.us/original/2.jpg",
+                        "tag_string": "second_tag",
+                    },
+                ]
+
+            posts.index = fake_index
+
+            await posts.download(save_raws=True, save_tags=True)
+
+        raw_by_filename = {
+            record["filename"]: record["raws"].iloc[0]["id"]
+            for record in client.saved_raws
+        }
+        tag_by_filename = {
+            record["filename"]: record["tag"]
+            for record in client.saved_tags
+        }
+        self.assertEqual(raw_by_filename, {"1.json": 1, "2.json": 2})
+        self.assertEqual(
+            tag_by_filename,
+            {"1.txt": "first_tag", "2.txt": "second_tag"},
+        )
 
 
 if __name__ == "__main__":

@@ -73,6 +73,7 @@ from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
 from .utils import normalize_filepath, logger, before_sleep_log, format_proxy_log
+from .typing import DownloadItem, DownloadResult, PageResult
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
 # values; keep WaifuBoard's wrapper types explicit when we rely on that behavior.
@@ -996,6 +997,11 @@ class Booru:
         self,
         tasks: list[Coroutine],
     ) -> AsyncIterable[Any]:
+        """Yield task results in completion order.
+
+        This is suitable for streaming work as soon as possible, but callers must
+        not infer the original input index from the yielded order.
+        """
         for t in asyncio.as_completed(tasks):
             try:
                 result = await t
@@ -1008,6 +1014,7 @@ class Booru:
         self,
         tasks: list[Coroutine],
     ) -> list[Any]:
+        """Return task results in the same order as the input task list."""
         results: list = await asyncio.gather(*tasks, return_exceptions=True)
         for i, res in enumerate(results):
             if isinstance(res, Exception):
@@ -1017,125 +1024,67 @@ class Booru:
 
     async def download_file(
         self,
-        url: str,
-        filepath: str,
-        headers: HeadersType | None = None,
-        referer: str | None = None,
-    ) -> tuple[str, str] | None:
+        item: DownloadItem,
+    ) -> DownloadResult | None:
         """
         下载单个文件到指定路径
 
         Args:
-            url (str): 文件 URL
-            filepath (str): 文件存储路径
-            headers (HeadersType, optional): 下载文件时使用的请求头. Defaults to None.
-            referer (str, optional): 下载文件时使用的 Referer 请求头. Defaults to None.
+            item (DownloadItem): 文件下载任务，包含 URL、存储路径、请求头、Referer 与可选 sidecar 元数据.
 
         Returns:
-            tuple[str, str] | None. 若下载成功，则返回对应的 (url, filepath)；若下载失败，则返回 None
+            DownloadResult | None. 若下载成功，则返回携带原始任务的结果；若下载失败，则返回 None
         """
         try:
             # 下载文件
             response = await self.get(
-                url,
-                headers=dict(headers) if headers is not None else None,
-                referer=referer,
+                item.url,
+                headers=dict(item.headers) if item.headers is not None else None,
+                referer=item.referer,
             )
             # 保存文件
-            async with aiofiles.open(filepath, "wb") as f:
+            async with aiofiles.open(item.filepath, "wb") as f:
                 await f.write(response.content)
-            return (url, filepath)
+            return DownloadResult(item=item, filepath=item.filepath)
         except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
             return None
 
     async def concurrent_download_file(
         self,
-        urls: pd.Series,
-        directory: str,
-        extract_pattern: Callable[[str], str] = os.path.basename,
-        headers: HeadersType | None = None,
-        referers: pd.Series | None = None,
-    ) -> AsyncIterable[tuple[str, str] | None]:
+        items: Iterable[DownloadItem],
+    ) -> AsyncIterable[DownloadResult | None]:
         """
-        并发下载文件到指定目录，忽略已存在的文件
-        文件名默认为 urls 中 url 的基础名称（即 url 的最后一个组件），也可以传递可调用对象给 extract_pattern 参数，以指定从 url 中提取文件名的规则
+        并发下载文件，忽略已存在的文件
 
         Args:
-            urls (pd.Series): 文件 URLs
-            directory (str): 文件存储目录
-            extract_pattern (Callable[[str], str], optional): 可调用对象，指定从 url 中提取文件名的规则. Defaults to os.path.basename.
-            headers (HeadersType, optional): 下载文件时使用的请求头. Defaults to None.
-            referers (pd.Series, optional): 与 urls 索引对齐的 Referer 请求头. Defaults to None.
+            items (Iterable[DownloadItem]): 文件下载任务集合。每个任务自行携带 URL、存储路径、Referer 与可选 sidecar 元数据，避免并发完成顺序破坏业务数据关联。
 
         Yields:
-            tuple[str, str] | None. 若下载成功，则返回对应的 (url, filepath)；若下载失败，则返回 None
+            DownloadResult | None. 若下载成功，则返回携带原始任务的结果；若下载失败，则返回 None
         """
-        def select_referers() -> list[object | None]:
-            if referers is None:
-                return [None] * len(urls)
-            if len(referers) == len(urls):
-                return list(referers)
+        download_items = list(items)
+        # 创建所有目标目录。filepath 由 DownloadItem 提供，允许同一批任务写入不同目录。
+        for directory in {os.path.dirname(item.filepath) for item in download_items}:
+            if directory and not await aioos.path.exists(directory):
+                await aioos.makedirs(directory)
 
-            values: list[object | None] = []
-            for index in urls.index:
-                referer = referers.loc[index]
-                if isinstance(referer, pd.Series):
-                    referer = referer.iloc[0] if not referer.empty else None
-                values.append(referer)
-            return values
-
-        def normalize_referer(referer: object | None) -> str | None:
-            if referer is None:
-                return None
-            if bool(pd.isna(referer)):
-                return None
-            return str(referer)
-
-        download_records = [
-            (url, referer)
-            for url, referer in zip(urls, select_referers())
-            if not bool(pd.isna(url))
+        # 只检查目标文件本身，避免对大目录重复 listdir 带来的额外开销。
+        patch_size = len(download_items)
+        download_items = [
+            item for item in download_items if not await aioos.path.exists(item.filepath)
         ]
-        # 创建目录
-        if not await aioos.path.exists(directory):
-            await aioos.makedirs(directory)
-        # 若存在已有文件，则将其过滤
-        else:
-            # 获取已有文件列表
-            files = await aioos.listdir(directory)
-            # 批 URLs 大小
-            patch_size = len(download_records)
-            # 过滤已有文件
-            download_records = [
-                (url, referer)
-                for url, referer in download_records
-                if extract_pattern(url) not in files
-            ]
-            # 已过滤文件数量
-            filter_size = patch_size - len(download_records)
-            if filter_size > 0:
-                logger.info(
-                    f"Filtered {filter_size} existing files from {patch_size} URLs"
-                )
-        # 检查 URLs 是否为空
-        if not download_records:
+        filter_size = patch_size - len(download_items)
+        if filter_size > 0:
+            logger.info(f"Filtered {filter_size} existing files from {patch_size} items")
+
+        # 检查下载任务是否为空
+        if not download_items:
             return
 
         # 创建异步任务列表
-        tasks = [
-            self.download_file(
-                url=url,
-                filepath=os.path.join(
-                    directory,
-                    extract_pattern(url),
-                ),
-                headers=headers,
-                referer=normalize_referer(referer),
-            )
-            for url, referer in download_records
-        ]
-        # 并发执行下载任务
+        tasks = [self.download_file(item) for item in download_items]
+        # 并发执行下载任务，结果按照完成顺序返回，业务关联由 DownloadResult.item 保留。
         async for res in self.stream_process_tasks(tasks):
             yield res
 
@@ -1161,16 +1110,12 @@ class Booru:
         # 创建目录
         if not await aioos.path.exists(directory):
             await aioos.makedirs(directory)
-        # 若存在已有文件，则根据 overwrite 参数决定是否覆盖
-        else:
-            if not overwrite:
-                # 获取已有文件列表
-                files = await aioos.listdir(directory)
-                if filename in files:
-                    logger.warning(f"File {filename} already exists in {directory}")
-                    return None
 
         filepath = os.path.join(directory, filename)
+        # 只检查目标文件，避免每次保存 sidecar 时扫描整个目录。
+        if not overwrite and await aioos.path.exists(filepath):
+            logger.warning(f"File {filename} already exists in {directory}")
+            return None
         try:
             # 保存文件
             async with aiofiles.open(filepath, "w") as f:
@@ -1213,16 +1158,12 @@ class Booru:
         # 创建目录
         if not await aioos.path.exists(directory):
             await aioos.makedirs(directory)
-        # 若存在已有文件，则根据 overwrite 参数决定是否覆盖
-        else:
-            if not overwrite:
-                # 获取已有文件列表
-                files = await aioos.listdir(directory)
-                if filename in files:
-                    logger.warning(f"File {filename} already exists in {directory}")
-                    return None
 
         filepath = os.path.join(directory, filename)
+        # 只检查目标文件，避免每次保存 sidecar 时扫描整个目录。
+        if not overwrite and await aioos.path.exists(filepath):
+            logger.warning(f"File {filename} already exists in {directory}")
+            return None
         try:
             # 处理标签内容
             if callback:
@@ -1283,7 +1224,7 @@ class Booru:
         page_key: str,
         callback: Callable[[Any], Any] | None = None,
         **kwargs,
-    ) -> AsyncIterable[list[dict] | None]:
+    ) -> AsyncIterable[PageResult | None]:
         """
         并发获取多个页面的帖子内容
 
@@ -1294,31 +1235,31 @@ class Booru:
             start_page (int): 查询起始页码
             end_page (int): 查询结束页码
             page_key (str): 页码参数的名称，用于在传递的 params 参数中设置页码
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
             **kwargs: 传递给 niquests.AsyncSession.request 的其它关键字参数
 
         Yields:
-            list[dict] | None. 若获取成功，则返回对应的帖子内容列表；若获取失败，则返回 None
+            PageResult | None. 若获取成功，则返回携带页码与内容的结果；若获取失败，则返回 None
         """
         if headers is None:
             headers = {}
-        if params is None:
-            params = {}
-        # 创建异步任务列表
-        tasks = []
-        # 获取指定页码的帖子列表
-        for page in range(start_page, end_page + 1):
-            params.update({page_key: page})
-            tasks.append(
-                self.fetch_page(
-                    api,
-                    headers=headers,
-                    params=params.copy(),
-                    callback=callback,
-                    **kwargs,
-                )
+        base_params = {} if params is None else params.copy()
+
+        async def fetch_page_result(page: int) -> PageResult:
+            # 每个并发任务使用独立 params，避免修改调用方传入的字典。
+            page_params = base_params.copy()
+            page_params.update({page_key: page})
+            content = await self.fetch_page(
+                api,
+                headers=headers,
+                params=page_params,
+                callback=callback,
+                **kwargs,
             )
+            return PageResult(page=page, content=content)
+
+        # 创建异步任务列表
+        tasks = [fetch_page_result(page) for page in range(start_page, end_page + 1)]
         # 并发执行下载任务
         async for res in self.stream_process_tasks(tasks):
             yield res
@@ -1379,3 +1320,41 @@ class BooruComponent:
         self.type = self.__class__.__name__
         # 当前调用组件的存储文件根目录
         self.directory = os.path.join(self.client.directory, self.platform, self.type)
+
+    def build_download_items(
+        self,
+        posts: pd.DataFrame,
+        images_directory: str,
+        *,
+        tag_column: str,
+        referer_factory: Callable[[pd.Series], str | None] | None = None,
+        extract_pattern: Callable[[str], str] = os.path.basename,
+    ) -> list[DownloadItem]:
+        """Build DownloadItem objects from a posts dataframe.
+
+        Keeping this conversion at the component boundary preserves the existing
+        pandas-based implementation while giving the lower-level downloader a
+        stable item/result contract.
+        """
+        items: list[DownloadItem] = []
+        for index, post in posts.iterrows():
+            url = post.get("file_url")
+            if bool(pd.isna(url)):
+                continue
+
+            tag = post.get(tag_column) if tag_column in post else None
+            if tag is not None and bool(pd.isna(tag)):
+                tag = None
+
+            url = str(url)
+            # 每个 item 同时携带下载参数和 sidecar 数据，避免并发完成顺序导致错位。
+            items.append(
+                DownloadItem(
+                    url=url,
+                    filepath=os.path.join(images_directory, extract_pattern(url)),
+                    referer=referer_factory(post) if referer_factory else None,
+                    raw=posts.loc[[index]],
+                    tags=str(tag) if tag is not None else None,
+                )
+            )
+        return items

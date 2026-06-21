@@ -244,7 +244,7 @@ class YanderePosts(MoebooruComponent):
                 end_page=gt_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
             #!仅适用于 posts 页面
             #!为防止遗漏帖子列表，回退至非并发模式获取 html 分页器中的最大页码之后的帖子列表
@@ -276,7 +276,7 @@ class YanderePosts(MoebooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     def create(self):
         # TODO
@@ -338,37 +338,32 @@ class YanderePosts(MoebooruComponent):
                 logger.info(f"All of the posts {i + 1} are empty.")
                 continue
 
-            # 下载帖子
-            urls = posts["file_url"]  # 帖子 URLs
-            # Yandere CDN 不强制要求 Referer；传帖子页是为了贴近正常浏览器流量。
-            referers = posts["id"].apply(
-                lambda post_id: f"{str(self.client.base_url).rstrip('/')}/post/show/{post_id}"
-            )
             posts_directory = os.path.join(
                 self.directory, f"{tags if tags != '' else 'all'}"
             )  # 帖子文件目录
             images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
 
+            # 构造下载任务
+            download_items = self.build_download_items(
+                posts,
+                images_directory,
+                tag_column="tags",
+                referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/post/show/{post['id']}",
+            )
+
             success_count, failure_count = 0, 0
-            async for index, res in aenumerate(
-                self.client.concurrent_download_file(
-                    urls,
-                    images_directory,
-                    referers=referers,
-                )
-            ):
+            async for res in self.client.concurrent_download_file(download_items):
                 if res is None:
                     failure_count += 1
                     continue
                 else:
                     success_count += 1
 
-                url, filepath = res
+                item = res.item
+                filepath = res.filepath
 
                 # 保存帖子 api 响应的元数据（json 格式）
-                if save_raws:
-                    # 保存元数据
-                    post_raws = posts.loc[[index]]  # 筛选后的元数据
+                if save_raws and item.raw is not None:
                     raws_directory = os.path.join(
                         posts_directory, "raws"
                     )  # 元数据文件目录
@@ -376,16 +371,14 @@ class YanderePosts(MoebooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".json"
                     )  # 元数据文件名
                     await self.client.save_raws(
-                        post_raws,
+                        item.raw,
                         directory=raws_directory,
                         filename=raws_filename,
                         overwrite=overwrite,
                     )
 
                 # 保存标签
-                if save_tags:
-                    # 帖子标签
-                    post_tags = posts.at[index, "tags"]  # 筛选后的 tags
+                if save_tags and item.tags is not None:
                     tags_directory = os.path.join(
                         posts_directory, "tags"
                     )  # 标签文件目录
@@ -393,12 +386,11 @@ class YanderePosts(MoebooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".txt"
                     )  # 标签文件名
                     await self.client.save_tags(
-                        post_tags,
+                        item.tags,
                         directory=tags_directory,
                         filename=tags_filename,
                         overwrite=overwrite,
                     )
-
             logger.info(
                 f"Downloaded {success_count} successful, {failure_count} failed for posts: {posts['id'].tolist()}"
             )
@@ -685,7 +677,7 @@ class YanderePools(MoebooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -696,7 +688,7 @@ class YanderePools(MoebooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     async def list_posts(
         self,
@@ -863,12 +855,6 @@ class YanderePools(MoebooruComponent):
                 )
                 posts = pd.DataFrame(posts)
 
-                # 下载帖子
-                urls = posts["file_url"]  # 帖子 URLs
-                # Yandere CDN 不强制要求 Referer；传帖子页是为了贴近正常浏览器流量。
-                referers = posts["id"].apply(
-                    lambda post_id: f"{str(self.client.base_url).rstrip('/')}/post/show/{post_id}"
-                )
                 posts_directory = os.path.join(
                     self.directory, f"{name}"
                 )  # 帖子文件目录
@@ -876,25 +862,27 @@ class YanderePools(MoebooruComponent):
                     posts_directory, "images"
                 )  # 图像文件目录
 
+                # 构造下载任务
+                download_items = self.build_download_items(
+                    posts,
+                    images_directory,
+                    tag_column="tags",
+                    referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/post/show/{post['id']}",
+                )
+
                 success_count, failure_count = 0, 0
-                async for index, res in aenumerate(
-                    self.client.concurrent_download_file(
-                        urls,
-                        images_directory,
-                        referers=referers,
-                    )
-                ):
+                async for res in self.client.concurrent_download_file(download_items):
                     if res is None:
                         failure_count += 1
                         continue
                     else:
                         success_count += 1
-                    url, filepath = res
+
+                    item = res.item
+                    filepath = res.filepath
 
                     # 保存帖子 api 响应的元数据（json 格式）
-                    if save_raws:
-                        # 保存元数据
-                        pool_raws = posts.loc[[index]]  # 筛选后的元数据
+                    if save_raws and item.raw is not None:
                         raws_directory = os.path.join(
                             posts_directory, "raws"
                         )  # 元数据文件目录
@@ -902,16 +890,14 @@ class YanderePools(MoebooruComponent):
                             os.path.splitext(os.path.basename(filepath))[0] + ".json"
                         )  # 元数据文件名
                         await self.client.save_raws(
-                            pool_raws,
+                            item.raw,
                             directory=raws_directory,
                             filename=raws_filename,
                             overwrite=overwrite,
                         )
 
                     # 保存标签
-                    if save_tags:
-                        # 帖子标签
-                        pool_tags = posts.at[index, "tags"]  # 筛选后的 tags
+                    if save_tags and item.tags is not None:
                         tags_directory = os.path.join(
                             posts_directory, "tags"
                         )  # 标签文件目录
@@ -919,12 +905,11 @@ class YanderePools(MoebooruComponent):
                             os.path.splitext(os.path.basename(filepath))[0] + ".txt"
                         )  # 标签文件名
                         await self.client.save_tags(
-                            pool_tags,
+                            item.tags,
                             directory=tags_directory,
                             filename=tags_filename,
                             overwrite=overwrite,
                         )
-
                 logger.info(
                     f"Downloaded {success_count} successful, {failure_count} failed for pool: {name}"
                 )

@@ -461,7 +461,7 @@ class DanbooruPosts(DanbooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
@@ -486,7 +486,7 @@ class DanbooruPosts(DanbooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     async def show(
         self,
@@ -686,12 +686,6 @@ class DanbooruPosts(DanbooruComponent):
                 logger.info(f"All of the posts {i + 1} are empty.")
                 continue
 
-            # 下载帖子
-            urls = posts["file_url"]  # 帖子 URLs
-            # Danbooru CDN 下载图片时需要帖子页 Referer。
-            referers = posts["id"].apply(
-                lambda post_id: f"{str(self.client.base_url).rstrip('/')}/posts/{post_id}"
-            )
             if md5 is not None:  # 存储文件目录
                 posts_directory = os.path.join(self.directory, f"{md5}")  # 帖子文件目录
                 images_directory = os.path.join(
@@ -705,26 +699,27 @@ class DanbooruPosts(DanbooruComponent):
                     posts_directory, "images"
                 )  # 图像文件目录
 
+            # 构造下载任务
+            download_items = self.build_download_items(
+                posts,
+                images_directory,
+                tag_column="tag_string",
+                referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/posts/{post['id']}",
+            )
+
             success_count, failure_count = 0, 0
-            async for index, res in aenumerate(
-                self.client.concurrent_download_file(
-                    urls,
-                    images_directory,
-                    referers=referers,
-                )
-            ):
+            async for res in self.client.concurrent_download_file(download_items):
                 if res is None:
                     failure_count += 1
                     continue
                 else:
                     success_count += 1
 
-                url, filepath = res
+                item = res.item
+                filepath = res.filepath
 
                 # 保存帖子 api 响应的元数据（json 格式）
-                if save_raws:
-                    # 保存元数据
-                    post_raws = posts.loc[[index]]  # 筛选后的元数据
+                if save_raws and item.raw is not None:
                     raws_directory = os.path.join(
                         posts_directory, "raws"
                     )  # 元数据文件目录
@@ -732,16 +727,14 @@ class DanbooruPosts(DanbooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".json"
                     )  # 元数据文件名
                     await self.client.save_raws(
-                        post_raws,
+                        item.raw,
                         directory=raws_directory,
                         filename=raws_filename,
                         overwrite=overwrite,
                     )
 
                 # 保存标签
-                if save_tags:
-                    # 帖子标签
-                    post_tags = posts.at[index, "tag_string"]  # 筛选后的 tags
+                if save_tags and item.tags is not None:
                     tags_directory = os.path.join(
                         posts_directory, "tags"
                     )  # 标签文件目录
@@ -749,12 +742,11 @@ class DanbooruPosts(DanbooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".txt"
                     )  # 标签文件名
                     await self.client.save_tags(
-                        post_tags,
+                        item.tags,
                         directory=tags_directory,
                         filename=tags_filename,
                         overwrite=overwrite,
                     )
-
             logger.info(
                 f"Downloaded {success_count} successful, {failure_count} failed for posts: {posts['id'].tolist()}"
             )
@@ -1003,7 +995,7 @@ class DanbooruTags(DanbooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -1028,7 +1020,7 @@ class DanbooruTags(DanbooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     async def show(
         self,
@@ -1387,7 +1379,7 @@ class DanbooruArtists(DanbooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -1412,7 +1404,7 @@ class DanbooruArtists(DanbooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     async def show(
         self,
@@ -1820,7 +1812,7 @@ class DanbooruWikiPages(DanbooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -1845,7 +1837,7 @@ class DanbooruWikiPages(DanbooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     async def show(
         self,
@@ -2275,7 +2267,7 @@ class DanbooruPools(DanbooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标题的图集列表
         else:
@@ -2300,7 +2292,7 @@ class DanbooruPools(DanbooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     async def show(
         self,
@@ -2449,12 +2441,6 @@ class DanbooruPools(DanbooruComponent):
                     [post for res in task_results if res is not None for post in res]
                 )
 
-                # 下载帖子
-                urls = posts["file_url"]  # 帖子 URLs
-                # Danbooru CDN 下载图片时需要帖子页 Referer。
-                referers = posts["id"].apply(
-                    lambda post_id: f"{str(self.client.base_url).rstrip('/')}/posts/{post_id}"
-                )
                 posts_directory = os.path.join(
                     self.directory, f"{name}"
                 )  # 帖子文件目录
@@ -2462,25 +2448,27 @@ class DanbooruPools(DanbooruComponent):
                     posts_directory, "images"
                 )  # 图像文件目录
 
+                # 构造下载任务
+                download_items = self.build_download_items(
+                    posts,
+                    images_directory,
+                    tag_column="tag_string",
+                    referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/posts/{post['id']}",
+                )
+
                 success_count, failure_count = 0, 0
-                async for index, res in aenumerate(
-                    self.client.concurrent_download_file(
-                        urls,
-                        images_directory,
-                        referers=referers,
-                    )
-                ):
+                async for res in self.client.concurrent_download_file(download_items):
                     if res is None:
                         failure_count += 1
                         continue
                     else:
                         success_count += 1
-                    url, filepath = res
+
+                    item = res.item
+                    filepath = res.filepath
 
                     # 保存帖子 api 响应的元数据（json 格式）
-                    if save_raws:
-                        # 保存元数据
-                        pool_raws = posts.loc[[index]]  # 筛选后的元数据
+                    if save_raws and item.raw is not None:
                         raws_directory = os.path.join(
                             posts_directory, "raws"
                         )  # 元数据文件目录
@@ -2488,16 +2476,14 @@ class DanbooruPools(DanbooruComponent):
                             os.path.splitext(os.path.basename(filepath))[0] + ".json"
                         )  # 元数据文件名
                         await self.client.save_raws(
-                            pool_raws,
+                            item.raw,
                             directory=raws_directory,
                             filename=raws_filename,
                             overwrite=overwrite,
                         )
 
                     # 保存标签
-                    if save_tags:
-                        # 帖子标签
-                        pool_tags = posts.at[index, "tag_string"]  # 筛选后的 tags
+                    if save_tags and item.tags is not None:
                         tags_directory = os.path.join(
                             posts_directory, "tags"
                         )  # 标签文件目录
@@ -2505,12 +2491,11 @@ class DanbooruPools(DanbooruComponent):
                             os.path.splitext(os.path.basename(filepath))[0] + ".txt"
                         )  # 标签文件名
                         await self.client.save_tags(
-                            pool_tags,
+                            item.tags,
                             directory=tags_directory,
                             filename=tags_filename,
                             overwrite=overwrite,
                         )
-
                 logger.info(
                     f"Downloaded {success_count} successful, {failure_count} failed for pool: {name}"
                 )
@@ -2791,7 +2776,7 @@ class DanbooruPostVersions(DanbooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标题的帖子版本列表
         else:
@@ -2816,7 +2801,7 @@ class DanbooruPostVersions(DanbooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
 
 class DanbooruPoolVersions(DanbooruComponent):
@@ -3107,7 +3092,7 @@ class DanbooruPoolVersions(DanbooruComponent):
                 end_page=max_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标题的图集版本列表
         else:
@@ -3132,4 +3117,4 @@ class DanbooruPoolVersions(DanbooruComponent):
                 end_page=end_page,
                 page_key="page",
             ):
-                yield res
+                yield res.content if res is not None else None
