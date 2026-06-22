@@ -1337,7 +1337,7 @@ class BooruComponent:
         stable item/result contract.
         """
         items: list[DownloadItem] = []
-        for index, post in posts.iterrows():
+        for position, (_, post) in enumerate(posts.iterrows()):
             url = post.get("file_url")
             if bool(pd.isna(url)):
                 continue
@@ -1353,7 +1353,7 @@ class BooruComponent:
                     url=url,
                     filepath=os.path.join(images_directory, extract_pattern(url)),
                     referer=referer_factory(post) if referer_factory else None,
-                    raw=posts.loc[[index]],
+                    raw=posts.iloc[[position]],
                     tags=str(tag) if tag is not None else None,
                 )
             )

@@ -236,6 +236,35 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
             all(isinstance(result, PageResult) for result in results if result is not None)
         )
 
+    def test_build_download_items_keeps_duplicate_index_raws_positional(self):
+        booru = RecordingDownloadBooru()
+        component = DanbooruPosts(booru)
+        posts = pd.DataFrame(
+            [
+                {
+                    "id": 1,
+                    "file_url": "https://cdn.example.test/1.jpg",
+                    "tag_string": "first_tag",
+                },
+                {
+                    "id": 2,
+                    "file_url": "https://cdn.example.test/2.jpg",
+                    "tag_string": "second_tag",
+                },
+            ],
+            index=[7, 7],
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            items = component.build_download_items(
+                posts,
+                directory,
+                tag_column="tag_string",
+            )
+
+        self.assertEqual([item.raw.iloc[0]["id"] for item in items], [1, 2])
+        self.assertEqual([len(item.raw) for item in items], [1, 1])
+
 
 class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
     async def test_danbooru_posts_download_uses_post_page_referers(self):
