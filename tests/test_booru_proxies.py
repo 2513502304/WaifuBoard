@@ -580,6 +580,43 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("expected=404", records.output[-1])
 
+    async def test_unexpected_404_retries_outer_and_rotates_proxy(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+            max_attempt_number=2,
+            proxies=("http://proxy-a.test:8080", "http://proxy-b.test:8080"),
+        )
+        client = CapturingClient(
+            [
+                DummyResponse(404, "Not Found"),
+                DummyResponse(200, "OK"),
+            ]
+        )
+        booru.client = client
+
+        with patch(
+            "waifuboard.proxy.pool.random.choice",
+            side_effect=lambda choices: choices[0],
+        ):
+            with patch("waifuboard.booru.asyncio.sleep"):
+                with self.assertLogs("WaifuBoard", level="WARNING"):
+                    response = await booru.get(
+                        "https://example.test/rate-limited-as-missing.json"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(client.request_count, 2)
+        self.assertEqual(
+            client.request_history[0]["proxies"],
+            {"http": "http://proxy-a.test:8080", "https": "http://proxy-a.test:8080"},
+        )
+        self.assertEqual(
+            client.request_history[1]["proxies"],
+            {"http": "http://proxy-b.test:8080", "https": "http://proxy-b.test:8080"},
+        )
+
     async def test_http_verb_helpers_forward_expected_statuses(self):
         booru = Booru(
             default_headers=False,
