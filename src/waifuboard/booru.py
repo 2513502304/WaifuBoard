@@ -495,8 +495,7 @@ class Booru:
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        # UNSET: 未传入，继承 Booru 实例配置；若实例配置是 tuple，同样会走下方
-        #        tuple 候选流程，跳过 cooldown 中的代理后再现挑一个
+        # UNSET: 未传入，继承 Booru 实例配置；若实例配置是 tuple，同样会走下方 tuple 候选流程，跳过 cooldown 中的代理后再现挑一个
         # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
         # 其他 : 显式覆盖；若是 tuple，也会跳过正在 cooldown 的 proxy 后再现挑
         if isinstance(proxies, UnsetType):
@@ -565,7 +564,7 @@ class Booru:
             )
 
         # niquests 内层 Retry 先在当前选中代理上处理 status_forcelist 与 transport retry；只有它返回 unexpected error response 或最终抛出 Python exception 后，tenacity 外层才开始下一次 attempt 并让 selector 换代理
-        # 保留双层 retry 是兼容旧版 niquests Python-level 异常的兜底机制，同时恢复 main 中“非最后一次外层 attempt 对 HTTP error 调用 raise_for_status”的契约
+        # 双层 retry 的边界不能合并：niquests 内层固定使用同一个 outer attempt 已选中的代理，tenacity 外层既兜住底层泄漏的 Python-level exception，也负责在 unexpected HTTP error 后重新选择代理
         async for attempt in AsyncRetrying(
             sleep=asyncio.sleep,
             stop=stop_after_attempt(max_attempt_number),
@@ -620,7 +619,7 @@ class Booru:
                 # expected_statuses 是业务成功状态，不应污染代理健康；其他状态只有显式列入 cooldown policy 才累计失败
                 self._record_proxy_outcome(proxy_selection, failed=failed_status)
 
-                # main 的既有语义是在最后一次 attempt 前对所有 unexpected 4xx/5xx 调用 raise_for_status；这覆盖 niquests status_forcelist 之外的状态，并让下一轮外层 attempt 更换代理
+                # 非最后一次 attempt 对 unexpected 4xx/5xx 调用 raise_for_status，使 niquests status_forcelist 之外的错误也能消耗外层 retry 并更换代理；最后一次则返回响应供调用方自行检查，不在封装层强制抛异常
                 if (
                     attempt.retry_state.attempt_number < max_attempt_number
                     and not is_expected_status

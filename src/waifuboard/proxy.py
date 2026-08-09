@@ -357,7 +357,7 @@ class ProxySelector:
             return await self._select_single()
 
         if not self._candidates:
-            # 空 tuple 没有可轮换候选，沿用当前分支的直连回退行为而不是让 random.choice 抛 IndexError
+            # 空 tuple 表示没有配置可轮换代理，因此按直连处理，并避免把空池传给 random.choice 触发 IndexError
             return ProxySelection(proxies={}, key=None, log=None)
 
         while True:
@@ -405,7 +405,7 @@ class ProxySelector:
                 "All proxies are cooling down; waiting "
                 f"{format_elapsed(wait_seconds)} before retrying proxy selection."
             )
-            # 用户要求代理池不可用时等待最早恢复项；该等待属于代理调度，不消耗 tenacity attempt 或 HTTP timeout
+            # 所有候选均在 cooldown 时等待最早恢复项；该等待发生在发起 HTTP 请求之前，因此不消耗 tenacity attempt 或 HTTP timeout
             await asyncio.sleep(wait_seconds)
 
     async def _select_single(self) -> ProxySelection:
@@ -428,7 +428,7 @@ class ProxySelector:
                 f"Proxy {self._single.log} is cooling down; waiting "
                 f"{format_elapsed(remaining)} before retrying proxy selection."
             )
-            # 单代理没有替代候选，只能等待 cooldown 到期；直接失败会破坏“无可用代理时 await”的既定行为
+            # 单代理没有替代候选，只能等待 cooldown 到期；若在此直接失败，调用方会在已配置代理仍可恢复的情况下提前收到异常
             await asyncio.sleep(remaining)
 
         return self._single
