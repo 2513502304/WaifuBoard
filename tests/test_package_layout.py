@@ -5,10 +5,10 @@ import unittest
 class PackageLayoutTests(unittest.TestCase):
     def test_site_clients_are_exported_from_root_and_sites_package(self):
         from waifuboard import DanbooruClient, SafebooruClient, YandereClient
-        from waifuboard.sites.danbooru import DanbooruClient as SiteDanbooruClient
-        from waifuboard.sites.moebooru import YandereClient as SiteYandereClient
-        from waifuboard.sites.safebooru import (
+        from waifuboard.sites import (
+            DanbooruClient as SiteDanbooruClient,
             SafebooruClient as SiteSafebooruClient,
+            YandereClient as SiteYandereClient,
         )
 
         self.assertIs(DanbooruClient, SiteDanbooruClient)
