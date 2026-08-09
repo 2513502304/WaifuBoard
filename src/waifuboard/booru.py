@@ -495,14 +495,19 @@ class Booru:
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        # UNSET 继承实例代理；None 注入 no_proxy="*" 显式压过环境代理，并规避 niquests 对空代理 URL 的 KeyError
+        # UNSET: 未传入，继承 Booru 实例配置；若实例配置是 tuple，同样会走下方
+        #        tuple 候选流程，跳过 cooldown 中的代理后再现挑一个
+        # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
+        # 其他 : 显式覆盖；若是 tuple，也会跳过正在 cooldown 的 proxy 后再现挑
         if isinstance(proxies, UnsetType):
             effective_proxies = self._proxies or {}
         elif proxies is None:
+            # niquests.utils 中的 select_proxy 对该值返回 None 并赋值给实际使用的 proxy，因此将会走 proxy is None 的分支，不会进入 self.proxy_manager[proxy] 筛选 proxy 的分支
             effective_proxies = {"no_proxy": "*"}
         else:
             effective_proxies = proxies
 
+        # 上述三种输入最终都交给同一个 selector：str/dict 会在 cooldown 中等待自身恢复，tuple 则会跳过 cooldown 候选并在每轮外层 retry 换一个尚未尝试的代理
         # selector 在每个 Booru.request 只创建一次，因此代理池的 normalize、select_proxy 与凭据脱敏不会在每轮 tenacity attempt 重复执行
         proxy_selector = ProxySelector(
             url=url,
@@ -521,6 +526,7 @@ class Booru:
         # 有些站点会把业务状态编码到非 2xx/429 状态码里；命中时不触发 Booru 外层 status retry。
         expected_status_codes = set(expected_statuses or ())
 
+        # before_sleep formatter 通过闭包读取刚失败 attempt 的代理；首次 select 前先放入空值，避免 callback 闭包捕获一个尚未绑定的局部变量
         proxy_selection = ProxySelection(proxies={}, key=None, log=None)
 
         def format_request_retry_log(retry_state) -> str:

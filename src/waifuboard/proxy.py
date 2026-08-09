@@ -254,8 +254,8 @@ def resolve_proxy(
     Returns:
         ProxyResolution: Internal proxy key and corresponding redacted log value.
     """
-    # {"no_proxy": "*"} 是 WaifuBoard 在 request-level proxies=None 时注入的
-    # 显式直连哨兵；niquests.select_proxy() 对它返回 None，因此需要先识别为 direct。
+    # {"no_proxy": "*"} 是 WaifuBoard 在 request-level proxies=None 时注入的显式直连哨兵，它用 request-level 配置压过 env/session 代理
+    # niquests.select_proxy() 对该哨兵返回 None；这里需要在调用 select_proxy 前先记为 direct，否则无法在日志与 cooldown identity 中区分“显式直连”和“没有解析到代理”
     if proxies.get("no_proxy") == "*" and len(proxies) == 1:
         return ProxyResolution(key=DIRECT_PROXY_KEY, log=DIRECT_PROXY_KEY)
 
@@ -265,8 +265,8 @@ def resolve_proxy(
     if proxy is None:
         return ProxyResolution(key=None, log=None)
 
-    # 空字符串来自 requests/niquests 风格的 scheme-level 直连配置，
-    # 例如 {"https": ""} 命中了当前请求 scheme。
+    # 空字符串是另一种直连路径：它来自 requests/niquests 风格的 scheme-level 配置，例如 {"https": ""} 命中当前请求 scheme
+    # 这个分支不能和上方 no_proxy="*" 合并：前者是 select_proxy 返回的实际值，后者必须在 select_proxy 把语义折叠成 None 之前识别
     if proxy == "":
         return ProxyResolution(key=DIRECT_PROXY_KEY, log=DIRECT_PROXY_KEY)
 
@@ -306,11 +306,12 @@ class ProxySelector:
             base_url (str | None): Session base URL used to resolve relative request URLs.
         """
         self._tracker = tracker
+        # 用候选在 tuple 中的索引记录已尝试项，而不是用 proxy key：dict 候选不可 hash，且用户可能有意在池中放入多个相同配置作为权重
         self._used_candidate_indexes: set[int] = set()
 
         if isinstance(proxies, tuple):
             self._single: ProxySelection | None = None
-            # URL、base_url 与候选池在单次 Booru.request 生命周期内不变，因此 normalize/select_proxy/脱敏只需执行一次
+            # URL、base_url 与候选池在单次 Booru.request 生命周期内不变，因此每个候选的 normalize/select_proxy/脱敏只需在构造 selector 时执行一次，后续 tenacity attempt 直接复用结果
             self._candidates = tuple(
                 _ProxyCandidate(
                     index=index,
@@ -360,12 +361,13 @@ class ProxySelector:
             return ProxySelection(proxies={}, key=None, log=None)
 
         while True:
+            # 每轮重新计算 available，因为共享 tracker 可能被其他并发请求更新，且上一轮等待期间可能有 cooldown 到期
             available_candidates: list[_ProxyCandidate] = []
             cooling_down_keys: list[str] = []
 
             for candidate in self._candidates:
                 selection = candidate.selection
-                # remaining 同时完成过期项惰性清理；单次读取即可判断 availability，避免先 is_available 再重复查 deadline
+                # remaining 同时完成过期项惰性清理；单次读取即可判断 availability，避免先 is_available 再重复查 deadline；None/direct 不是可封禁的真实代理，所以直接视为可用
                 remaining = (
                     self._tracker.remaining(selection.key)
                     if selection.key not in (None, DIRECT_PROXY_KEY)
@@ -384,7 +386,7 @@ class ProxySelector:
                     cooling_down_keys.append(selection.key)
 
             if available_candidates:
-                # 外层 retry 优先使用本次 request 尚未尝试过的代理，避免 random.choice 再次抽中同一个死代理；全部尝试过后才开启下一轮
+                # 外层 retry 优先使用本次 request 尚未尝试过的代理，避免 random.choice 再次抽中同一个死代理；只有当当前可用候选全部尝试过后才清空记录并开启下一轮，cooldown 中的候选不会被误记为已尝试
                 unused_candidates = [
                     candidate
                     for candidate in available_candidates
