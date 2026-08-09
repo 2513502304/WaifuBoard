@@ -3,17 +3,16 @@ Safebooru Image Board API implementation.
 """
 
 import os
-import re
 from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
-from lxml import etree
 
 from ..booru import Booru, BooruComponent
-from ..observability import logger
+from ..utils import format_request_error, logger
+from ._pagination import max_query_parameter
 
 __all__ = [
     # base classes
@@ -119,19 +118,17 @@ class SafebooruPosts(SafebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大 pid
-            tree = etree.HTML(response.text)
-            # 当前页为 b 标签，只有一页时，仅存在 b 标签；超过一页时，余下的页为 a 标签，且最后一页的 a 标签中含有 alt="last page" 属性
-            pagination = tree.xpath(
-                '//div[@class="pagination"]/a[@alt="last page"]/@href'
+            # Safebooru 在 last-page href 中携带从 0 开始的 pid；共享 helper 使用 URL 解析保留这一站点语义，而不是把它误当成从 1 开始的页码
+            return max_query_parameter(
+                response.text,
+                '//div[@class="pagination"]/a[@alt="last page"]/@href',
+                parameter="pid",
+                default=0,
             )
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                last_pid = re.findall(r"pid=(\d+)", pagination[0])[0]
-                return int(last_pid)
-            else:  # 不存在分页器，说明该页面只有一页
-                return 0
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # pid 从 0 开始；探测失败时返回最小有效值，让 all_page 仍能请求首批结果并保持 -> int 契约
+            return 0
 
     async def list(
         self,
@@ -318,8 +315,8 @@ class SafebooruPosts(SafebooruComponent):
             async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
-                start_page=start_page - 1,
-                end_page=end_page - 1,
+                start_page=start_page,
+                end_page=end_page,
                 page_key="pid",
             ):
                 yield res
@@ -360,8 +357,9 @@ class SafebooruPosts(SafebooruComponent):
         async for i, posts in aenumerate(
             self.list(
                 limit=limit,
-                start_page=start_page,
-                end_page=end_page,
+                # list() 直接暴露 Safebooru 从 0 开始的 pid；download() 保留从 1 开始的用户页码，并在调用边界转换一次，避免默认下载产生 pid=-1 或跳过首批结果
+                start_page=start_page - 1,
+                end_page=end_page - 1,
                 all_page=all_page,
                 tags=tags,
                 cid=cid,

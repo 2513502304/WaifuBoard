@@ -1,12 +1,10 @@
+import importlib.util
 import unittest
 
 
 class PackageLayoutTests(unittest.TestCase):
-    def test_site_clients_keep_legacy_and_root_imports_compatible(self):
+    def test_site_clients_are_exported_from_root_and_sites_package(self):
         from waifuboard import DanbooruClient, SafebooruClient, YandereClient
-        from waifuboard.danbooru import DanbooruClient as LegacyDanbooruClient
-        from waifuboard.moebooru import YandereClient as LegacyYandereClient
-        from waifuboard.safebooru import SafebooruClient as LegacySafebooruClient
         from waifuboard.sites.danbooru import DanbooruClient as SiteDanbooruClient
         from waifuboard.sites.moebooru import YandereClient as SiteYandereClient
         from waifuboard.sites.safebooru import (
@@ -14,11 +12,17 @@ class PackageLayoutTests(unittest.TestCase):
         )
 
         self.assertIs(DanbooruClient, SiteDanbooruClient)
-        self.assertIs(DanbooruClient, LegacyDanbooruClient)
         self.assertIs(SafebooruClient, SiteSafebooruClient)
-        self.assertIs(SafebooruClient, LegacySafebooruClient)
         self.assertIs(YandereClient, SiteYandereClient)
-        self.assertIs(YandereClient, LegacyYandereClient)
+
+    def test_top_level_site_compatibility_modules_are_removed(self):
+        for module_name in (
+            "waifuboard.danbooru",
+            "waifuboard.moebooru",
+            "waifuboard.safebooru",
+        ):
+            with self.subTest(module_name=module_name):
+                self.assertIsNone(importlib.util.find_spec(module_name))
 
     def test_path_helper_keeps_utils_compatibility_export(self):
         from waifuboard.paths import normalize_filepath

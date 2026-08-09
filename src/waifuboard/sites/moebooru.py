@@ -7,12 +7,13 @@ from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd
+import orjson
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
-from lxml import etree
 
 from ..booru import Booru, BooruComponent
-from ..observability import logger
+from ..utils import format_request_error, logger
+from ._pagination import max_numeric_link_text
 
 __all__ = [
     # base classes
@@ -118,16 +119,15 @@ class YanderePosts(MoebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
-            pagination = tree.xpath('//div[@class="pagination"]/a[@aria-label]/text()')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # yande.re 会在数字链接后追加 Next；共享 Parsel helper 只读取数字标签，避免导航文案或链接顺序变化导致页码解析错误
+            return max_numeric_link_text(
+                response.text,
+                '//div[@class="pagination"]/a[@aria-label]',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # 分页探测失败时使用从 1 开始的最小有效页码；返回 None 会在 all_page 的范围计算中触发类型错误
+            return 1
 
     async def list(
         self,
@@ -254,7 +254,8 @@ class YanderePosts(MoebooruComponent):
 
             # 当前查询页码
             page = gt_page + 1
-            # 直到获取到空数据为止
+            previous_page_signature: bytes | None = None
+            # HTML 分页器可能低估受隐藏帖子影响的实际页数，因此继续逐页读取直到空页；同时检测服务端忽略过大 page 后重复返回上一页的行为，防止无限循环
             while True:
                 params.update({"page": page})
                 content: list[dict] = await self.client.fetch_page(
@@ -262,6 +263,17 @@ class YanderePosts(MoebooruComponent):
                     params=params,
                 )
                 if content:
+                    # API 页面来自 JSON；排序 key 后序列化可得到与 dict 插入顺序无关的稳定签名，只保留上一页签名即可让内存保持常量
+                    page_signature = orjson.dumps(
+                        content,
+                        option=orjson.OPT_SORT_KEYS,
+                    )
+                    if page_signature == previous_page_signature:
+                        logger.warning(
+                            f"Stopping pagination at page {page}: the server repeated the previous non-empty page."
+                        )
+                        break
+                    previous_page_signature = page_signature
                     yield content
                     page += 1
                 else:
@@ -603,16 +615,15 @@ class YanderePools(MoebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
-            pagination = tree.xpath('//div[@class="pagination"]/a[@aria-label]/text()')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # pool 与 post 使用相同的分页 DOM；只提取数字链接可兼容导航链接文案或顺序调整
+            return max_numeric_link_text(
+                response.text,
+                '//div[@class="pagination"]/a[@aria-label]',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # pool 页码同样从 1 开始，失败时返回最小有效页而不是破坏 -> int 契约
+            return 1
 
     async def list_pools(
         self,
@@ -857,6 +868,11 @@ class YanderePools(MoebooruComponent):
                     id=id,
                 )
                 posts = pd.DataFrame(posts)
+
+                # 空图集没有 file_url 列；必须在列访问和下载 helper 之前跳过，避免 KeyError 以及无意义的空下载批次
+                if posts.empty:
+                    logger.info(f"Posts of pool {name} are empty.")
+                    continue
 
                 # 下载帖子
                 urls = posts["file_url"]  # 帖子 URLs
