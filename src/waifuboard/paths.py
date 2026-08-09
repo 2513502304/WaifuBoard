@@ -8,6 +8,8 @@ import re
 INVALID_PATH_REGEX: re.Pattern[str] = re.compile(r'[\\/:*?"<>|]')
 # 匹配文件名中的通配符 *, ?, [, ], {, }
 INVALID_GLOB_REGEX: re.Pattern[str] = re.compile(r"[][*?{}]")
+# ASCII 控制字符在 Windows 文件名中无效，NUL 也会让 POSIX 文件 API 拒绝路径；该规则不允许被调用方通过自定义 regexes 绕过
+ASCII_CONTROL_REGEX: re.Pattern[str] = re.compile(r"[\x00-\x1f]")
 # Windows 会拒绝这些设备名，即使文件名带有扩展名；跨平台下载任务应在生成路径时统一规避，而不是等到写盘时才失败
 WINDOWS_RESERVED_NAMES = frozenset(
     {
@@ -45,6 +47,9 @@ def normalize_filepath(
     # 顺序应用所有清理规则，保持调用方传入自定义 regexes 时的确定性
     for regex in regexes:
         filepath = regex.sub("", filepath)
+
+    # 调用方 regexes 只用于扩展清理策略；基础文件系统安全约束始终由 WaifuBoard 在后续步骤统一执行
+    filepath = ASCII_CONTROL_REGEX.sub("", filepath)
 
     # Windows 不允许文件名以空格或点结尾；清理无效字符后再执行，防止原始字符删除后暴露新的尾随点
     filepath = filepath.rstrip(" .")
