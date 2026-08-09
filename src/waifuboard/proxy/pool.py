@@ -30,10 +30,13 @@ _EnvironmentProxySnapshot: TypeAlias = tuple[
 ]
 _EnvironmentProxySnapshots: TypeAlias = tuple[_EnvironmentProxySnapshot, ...]
 
-# prepared cache 的一项代表一整份代理配置快照，而不是池中的一个 proxy；128 项足以覆盖全局池和少量 request override，同时限制动态配置长期运行时的内存占用
-PREPARED_PROXY_CACHE_SIZE = 128
+# prepared cache 的一项代表一整份代理配置快照，而不是池中的单个 proxy；16 项可容纳常见的一个全局池与少量地域性 request override，并为临时配置留出余量
+# 每项同时持有内容化 cache key 与规范化代理池，大型配置可能包含数千个 mapping，因此不能按 niquests.proxy_manager 那种“一项只对应一个实际 proxy”的无界缓存处理
+# 该上限只约束跨客户端共享的 LRU；仍被 Booru 实例作为全局配置或最近一次 request override 引用的 prepared pool 属于活跃状态，不会因共享 LRU 淘汰而失效
+PREPARED_PROXY_CACHE_SIZE = 16
 # niquests.proxy_manager 的每个 cache value 只对应一个实际使用过的 proxy，而这里每个 route value 都包含整份代理池的解析结果，不能按 niquests 的无界字典处理
-# functools.lru_cache 装饰的是类方法函数，因此当前 32 项上限由所有 PreparedProxyPool 实例共同使用，cache key 包含“配置快照 + scheme/authority + 环境代理快照”；它仍能覆盖常见 API/CDN origin，并将旧版 256 项容量可能长期保留的大型代理池 route 快照限制在更小范围内
+# functools.lru_cache 装饰的是类方法函数，因此 32 项由所有 PreparedProxyPool 实例共同使用，cache key 包含“PreparedProxyPool 实例 + scheme/authority + 环境代理快照”，并会在对应 route 淘汰前保持该 pool 存活
+# 同一 origin 的不同 path/query 复用整池解析结果，而不同 scheme/host 必须分开，因为 niquests 支持 host-specific proxy key 且 no_proxy 也按目标主机判断；32 项可覆盖少量配置访问常见 API/CDN origin，同时限制大型代理池解析快照的内存占用
 PROXY_ROUTE_CACHE_SIZE = 32
 
 
@@ -94,6 +97,21 @@ def normalize_proxy(value: ProxyCandidateType) -> dict[str, str]:
         return {"http": value, "https": value}
     # prepared pool 会跨请求复用，因此必须复制用户 mapping，避免调用方后续修改使 cache key 与实际内容不一致
     return value.copy()
+
+
+def is_immutable_proxy_pool(proxies: ProxyPoolType | None) -> bool:
+    """Return whether a proxy configuration cannot change after preparation.
+
+    Args:
+        proxies (ProxyPoolType | None): Proxy configuration to classify.
+
+    Returns:
+        bool: True for None, one string, or a tuple containing only strings.
+    """
+    return proxies is None or isinstance(proxies, str) or (
+        isinstance(proxies, tuple)
+        and all(isinstance(candidate, str) for candidate in proxies)
+    )
 
 
 def redact_proxy_url(proxy: str) -> str:
@@ -163,7 +181,7 @@ def _proxy_route_url(url: str, base_url: str | None) -> str:
     """
     request_url = merge_base_url(base_url, url) or url
     parsed = urlparse(request_url)
-    # select_proxy 只读取 scheme 与 hostname；保留完整 netloc 虽会让不同端口形成不同 cache key，但可正确覆盖 IPv6、userinfo 和非标准 URL authority
+    # select_proxy 根据 scheme/hostname 匹配代理，而 no_proxy 还可能按 netloc/port 判断旁路；因此保留完整 authority 作为保守边界，path/query/fragment 则不会改变代理路由，可从 cache key 删除
     return parsed._replace(path="", params="", query="", fragment="").geturl()
 
 

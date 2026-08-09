@@ -1,7 +1,7 @@
 import logging
 import unittest
 from unittest.mock import Mock, patch
-from typing import get_args
+from typing import Any, cast, get_args
 
 from niquests.exceptions import HTTPError
 from niquests.exceptions import RequestException
@@ -9,6 +9,7 @@ from niquests.exceptions import RequestException
 from waifuboard.booru import Booru, BodyFormValueType, QueryParameterScalarType
 from waifuboard.observability import format_bytes, format_request_error
 from waifuboard.proxy import (
+    PREPARED_PROXY_CACHE_SIZE,
     ProxyCooldownTracker,
     PreparedProxyPool,
     format_proxy_key,
@@ -131,6 +132,19 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(first, second)
 
+    def test_prepared_proxy_cache_uses_bounded_configuration_capacity(self):
+        self.assertEqual(
+            _prepare_proxy_pool_cached.cache_info().maxsize,
+            PREPARED_PROXY_CACHE_SIZE,
+        )
+
+        for index in range(PREPARED_PROXY_CACHE_SIZE + 1):
+            prepare_proxy_pool(f"http://proxy-{index}.test:8080")
+
+        cache_info = _prepare_proxy_pool_cached.cache_info()
+        self.assertEqual(cache_info.currsize, PREPARED_PROXY_CACHE_SIZE)
+        self.assertEqual(cache_info.misses, PREPARED_PROXY_CACHE_SIZE + 1)
+
     async def test_mutated_request_proxy_mapping_does_not_reuse_stale_cache(self):
         proxies = {"https": "http://proxy-a.test:8080"}
         first = prepare_proxy_pool(proxies)
@@ -150,6 +164,30 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(first, second)
         self.assertEqual(first_selection.key, "http://proxy-a.test:8080")
         self.assertEqual(second_selection.key, "http://proxy-b.test:8080")
+
+    async def test_repeated_immutable_request_override_reuses_identity_cache(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.CRITICAL,
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        booru.client = cast(
+            Any,
+            CapturingClient([DummyResponse(), DummyResponse()]),
+        )
+        proxies = tuple(
+            f"http://proxy-{index}.test:8080" for index in range(100)
+        )
+
+        with patch(
+            "waifuboard.booru.prepare_proxy_pool",
+            wraps=prepare_proxy_pool,
+        ) as prepare:
+            await booru.get("https://example.test/first.json", proxies=proxies)
+            await booru.get("https://example.test/second.json", proxies=proxies)
+
+        prepare.assert_called_once_with(proxies)
 
     async def test_returned_selection_cannot_mutate_cached_proxy_metadata(self):
         pool = prepare_proxy_pool({"https": "http://proxy-a.test:8080"})
@@ -279,6 +317,32 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(restricted.key, "http://japan.test:8080")
         self.assertEqual(unrestricted.key, "http://global.test:8080")
+
+    async def test_route_cache_reuses_origin_and_separates_scheme_or_host(self):
+        pool = prepare_proxy_pool({"all": "http://global.test:8080"})
+        tracker = ProxyCooldownTracker()
+
+        await pool.selector(
+            url="https://api.example.test/first?page=1",
+            tracker=tracker,
+        ).select()
+        await pool.selector(
+            url="https://api.example.test/second?page=2",
+            tracker=tracker,
+        ).select()
+        await pool.selector(
+            url="http://api.example.test/second?page=2",
+            tracker=tracker,
+        ).select()
+        await pool.selector(
+            url="https://cdn.example.test/image.jpg",
+            tracker=tracker,
+        ).select()
+
+        cache_info = PreparedProxyPool._resolve_route.cache_info()
+        self.assertEqual(cache_info.hits, 1)
+        self.assertEqual(cache_info.misses, 3)
+        self.assertEqual(cache_info.currsize, 3)
 
     async def test_prepared_proxy_pool_resolves_relative_url_against_current_base_url(self):
         pool = prepare_proxy_pool(

@@ -80,6 +80,7 @@ from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
 from .utils import (
+    PreparedProxyPool,
     ProxyCooldownTracker,
     ProxySelection,
     logger,
@@ -87,6 +88,7 @@ from .utils import (
     format_retry_log,
     format_elapsed,
     get_body_size,
+    is_immutable_proxy_pool,
     before_sleep_log,
     normalize_filepath,
     prepare_proxy_pool,
@@ -349,12 +351,12 @@ class Booru:
         # selector 的已尝试索引不保存在 prepared pool 中，每个逻辑请求仍会创建独立状态，因此并发请求不会互相消耗代理候选
         self._prepared_proxy_pool = prepare_proxy_pool(proxies or {})
         # str 与 tuple[str] 不可能原地变化，可在 request 热路径直接 O(1) 复用；dict 或 tuple[dict] 仍需按内容重新取 cache，以保留调用方构造后修改 mapping 的既有行为
-        self._proxy_config_is_immutable = proxies is None or isinstance(
-            proxies, str
-        ) or (
-            isinstance(proxies, tuple)
-            and all(isinstance(candidate, str) for candidate in proxies)
-        )
+        self._proxy_config_is_immutable = is_immutable_proxy_pool(proxies)
+        # 大型 request override 即使命中全局 prepared LRU，也需要 O(pool_size) 生成内容 key；保留最近一次不可变对象可让同一调用点连续复用时按 identity O(1) 命中
+        # 这里只缓存单项以控制状态复杂度；不同但内容相等的对象仍由全局内容缓存复用，可变 dict/tuple[dict] 则绝不走 identity 快路径
+        self._request_proxy_pool_cache: (
+            tuple[ProxiesType, PreparedProxyPool] | None
+        ) = None
         self._max_attempt_number: int | None = max_attempt_number
         self._proxy_cooldown = ProxyCooldownTracker(
             threshold=proxy_cooldown_threshold,
@@ -521,7 +523,18 @@ class Booru:
             # niquests.utils 中的 select_proxy 对该值返回 None 并赋值给实际使用的 proxy，因此将会走 proxy is None 的分支，不会进入 self.proxy_manager[proxy] 筛选 proxy 的分支
             prepared_proxy_pool = prepare_proxy_pool({"no_proxy": "*"})
         else:
-            prepared_proxy_pool = prepare_proxy_pool(proxies)
+            request_proxy_pool_cache = self._request_proxy_pool_cache
+            if (
+                request_proxy_pool_cache is not None
+                and request_proxy_pool_cache[0] is proxies
+            ):
+                # 同一不可变对象连续使用时直接复用 prepared pool；identity 判断不会把内容相等但生命周期不同的对象错误当成同一配置
+                prepared_proxy_pool = request_proxy_pool_cache[1]
+            else:
+                prepared_proxy_pool = prepare_proxy_pool(proxies)
+                if is_immutable_proxy_pool(proxies):
+                    # 赋值发生在第一个 await 之前，异步并发只能覆盖“最近一项”而不会让当前请求拿到另一配置对应的 pool；局部 prepared_proxy_pool 已经固定
+                    self._request_proxy_pool_cache = (proxies, prepared_proxy_pool)
 
         # 一次逻辑请求开始后固定使用同一 trust_env 快照，使初始代理解析与 redirect outcome 遵循同一规则；底层 session 配置不应在请求执行期间并发修改
         trust_env = bool(getattr(self.client, "trust_env", False))

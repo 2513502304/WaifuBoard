@@ -19,10 +19,12 @@ from .observability import (
 )
 from .paths import INVALID_GLOB_REGEX, INVALID_PATH_REGEX, normalize_filepath
 from .proxy import (
+    PreparedProxyPool,
     ProxyCooldownTracker,
     ProxySelection,
     format_proxy_key,
     format_proxy_log,
+    is_immutable_proxy_pool,
     prepare_proxy_pool,
     redact_proxy_url,
     resolve_outcome_proxy,
@@ -32,6 +34,7 @@ from .proxy import (
 __all__ = [
     "INVALID_GLOB_REGEX",
     "INVALID_PATH_REGEX",
+    "PreparedProxyPool",
     "ProxyCooldownTracker",
     "ProxySelection",
     "before_sleep_log",
@@ -39,6 +42,7 @@ __all__ = [
     "format_elapsed",
     "format_proxy_key",
     "format_proxy_log",
+    "is_immutable_proxy_pool",
     "format_request_error",
     "format_response_metrics",
     "format_retry_log",
