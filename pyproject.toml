@@ -12,7 +12,6 @@ maintainers = [{ name = "ChijiangZhai", email = "chijiangzhai@gmail.com" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -24,7 +23,8 @@ classifiers = [
     "Programming Language :: Python :: 3.15",
     "Topic :: Internet",
 ]
-license = { file = "LICENSE" }
+license = "LGPL-2.1-or-later"
+license-files = ["LICENSE"]
 keywords = [
     "python",
     "acg",

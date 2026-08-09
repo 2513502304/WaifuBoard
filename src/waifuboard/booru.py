@@ -88,7 +88,7 @@ from .observability import (
     before_sleep_log,
 )
 from .proxy import ProxyCooldownTracker, ProxySelection, prepare_proxy_pool
-from .utils import normalize_filepath
+from .paths import normalize_filepath
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
 # values; keep WaifuBoard's wrapper types explicit when we rely on that behavior.
