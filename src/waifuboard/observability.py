@@ -1,7 +1,9 @@
 """Logging and request-observability helpers used by WaifuBoard clients."""
 
 import logging
+import re
 import typing
+from urllib.parse import urlsplit, urlunsplit
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -37,6 +39,10 @@ logging.basicConfig(
     force=False,
 )
 logger = logging.getLogger("WaifuBoard")
+
+_HTTP_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_TRAILING_URL_PUNCTUATION = frozenset(".,;:!?")
+_TRAILING_URL_BRACKETS = {")": "(", "]": "[", "}": "{"}
 
 # * =================================================
 
@@ -133,6 +139,77 @@ def get_body_size(content: object) -> int | None:
     return None
 
 
+def _split_trailing_url_punctuation(url: str) -> tuple[str, str]:
+    """Separate prose punctuation accidentally captured after a URL.
+
+    Args:
+        url (str): HTTP(S) URL match that may include adjacent punctuation.
+
+    Returns:
+        tuple[str, str]: URL content and the trailing punctuation to restore.
+    """
+    trailing = ""
+
+    # 普通句末标点一定不属于日志中的 URL；右括号仅在 URL 内没有对应左括号时剥离，避免破坏路径中合法的成对括号
+    while url:
+        last_character = url[-1]
+        if last_character in _TRAILING_URL_PUNCTUATION:
+            url = url[:-1]
+            trailing = last_character + trailing
+            continue
+
+        opening_bracket = _TRAILING_URL_BRACKETS.get(last_character)
+        if opening_bracket is not None and url.count(last_character) > url.count(
+            opening_bracket
+        ):
+            url = url[:-1]
+            trailing = last_character + trailing
+            continue
+
+        break
+
+    return url, trailing
+
+
+def _sanitize_http_url(match: re.Match[str]) -> str:
+    """Remove credentials, query data, and fragments from one HTTP(S) URL match.
+
+    Args:
+        match (re.Match[str]): Regular-expression match containing an HTTP(S) URL.
+
+    Returns:
+        str: Sanitized URL followed by any adjacent prose punctuation.
+    """
+    url, trailing = _split_trailing_url_punctuation(match.group(0))
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        # 无法可靠解析时不能回退到原文，因为原文可能正好包含无法识别的凭据或 token
+        return f"<redacted-url>{trailing}"
+
+    # userinfo 位于最后一个 @ 之前；仅保留实际 authority，并统一删除所有 query 与 fragment 数据
+    authority = parsed.netloc.rsplit("@", maxsplit=1)[-1]
+    if not authority:
+        return f"<redacted-url>{trailing}"
+
+    sanitized = urlunsplit((parsed.scheme, authority, parsed.path, "", ""))
+    return f"{sanitized}{trailing}"
+
+
+def _sanitize_log_text(value: object) -> str:
+    """Sanitize HTTP(S) URLs and escape line breaks in log-bound text.
+
+    Args:
+        value (object): Value whose string representation will be written to a log.
+
+    Returns:
+        str: Single-line text with URL credentials and request secrets removed.
+    """
+    sanitized = _HTTP_URL_PATTERN.sub(_sanitize_http_url, str(value))
+    return sanitized.replace("\r", "\\r").replace("\n", "\\n")
+
+
 def format_request_error(error: BaseException) -> str:
     """Format a request error even when no prepared request is attached.
 
@@ -144,9 +221,9 @@ def format_request_error(error: BaseException) -> str:
     """
     # DNS、adapter 初始化或测试 double 可能在 PreparedRequest 建立前失败，此时 exception.request 合法地为 None，日志不能再触发二次 AttributeError
     request_url = getattr(getattr(error, "request", None), "url", "<unknown>")
-    # URL 与异常正文都可能包含服务端或用户可控文本；转义换行可保留原始信息，同时阻止单个异常伪造额外日志行
-    safe_request_url = str(request_url).replace("\r", "\\r").replace("\n", "\\n")
-    safe_error = str(error).replace("\r", "\\r").replace("\n", "\\n")
+    # 显式请求 URL 与异常正文可能重复携带 userinfo、query token 或 fragment，因此两处必须经过同一脱敏路径；随后转义换行以阻止异常伪造额外日志行
+    safe_request_url = _sanitize_log_text(request_url)
+    safe_error = _sanitize_log_text(error)
     return f"{error.__class__.__name__} for {safe_request_url} - {safe_error}"
 
 

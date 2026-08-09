@@ -434,6 +434,33 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
             "RequestException for https://example.test/a\\r\\nforged - first line\\nforged line",
         )
 
+    def test_request_error_log_redacts_secrets_from_all_http_urls(self):
+        error = RequestException(
+            "failed at (https://mirror:mirror-password@cdn.example.test/image_(1).jpg?api_key=embedded-secret#download), retrying",
+            request=DummyRequest(
+                url="https://user:password@example.test/data.json?api_key=request-secret#response"
+            ),
+        )
+
+        formatted = format_request_error(error)
+
+        self.assertEqual(
+            formatted,
+            "RequestException for https://example.test/data.json - failed at (https://cdn.example.test/image_(1).jpg), retrying",
+        )
+        for secret in (
+            "user",
+            "password",
+            "mirror",
+            "mirror-password",
+            "api_key",
+            "request-secret",
+            "embedded-secret",
+            "#response",
+            "#download",
+        ):
+            self.assertNotIn(secret, formatted)
+
     def test_format_proxy_key_keeps_credentials_separate(self):
         self.assertEqual(
             format_proxy_key(
