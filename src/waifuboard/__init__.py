@@ -1,9 +1,7 @@
 """WaifuBoard: Asynchronous API for downloading images, tags, and metadata from image board sites (e.g., Danbooru, Safebooru, Yandere). Ignore the downloaded files."""
 
 from .booru import Booru
-from .danbooru import DanbooruClient
-from .safebooru import SafebooruClient
-from .moebooru import YandereClient
+from .sites import DanbooruClient, SafebooruClient, YandereClient
 from .typing import DownloadItem, DownloadResult, PageResult
 
 # Package metadata

@@ -5,7 +5,7 @@ Booru Image Board API implementation.
 import asyncio
 import logging
 import os
-import random
+import time
 from http.cookiejar import CookieJar
 from typing import (
     Any,
@@ -14,7 +14,14 @@ from typing import (
     TypeAlias,
     cast,
 )
-from collections.abc import Callable, Coroutine, Iterable, AsyncIterable, Mapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Coroutine,
+    Iterable,
+    AsyncIterable,
+    Mapping,
+)
 from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
 from urllib.request import getproxies
 
@@ -72,7 +79,21 @@ from tenacity.wait import wait_exponential_jitter
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
-from .utils import normalize_filepath, logger, before_sleep_log, format_proxy_log
+from .utils import (
+    PreparedProxyPool,
+    ProxyCooldownTracker,
+    ProxySelection,
+    logger,
+    format_response_metrics,
+    format_retry_log,
+    format_elapsed,
+    get_body_size,
+    is_immutable_proxy_pool,
+    before_sleep_log,
+    normalize_filepath,
+    prepare_proxy_pool,
+    resolve_outcome_proxy,
+)
 from .typing import DownloadItem, DownloadResult, PageResult
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
@@ -80,8 +101,15 @@ from .typing import DownloadItem, DownloadResult, PageResult
 # Reference: https://github.com/jawah/niquests/pull/399
 BodyFormValueType: TypeAlias = str | bytes | int | float | bool | None
 BodyFormType: TypeAlias = (
-    list[tuple[str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]]]
-    | dict[str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]]
+    list[
+        tuple[
+            str,
+            BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...],
+        ]
+    ]
+    | dict[
+        str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]
+    ]
 )
 BodyType: TypeAlias = (
     str
@@ -124,6 +152,9 @@ __all__ = [
 ]
 
 
+DEFAULT_PROXY_COOLDOWN_STATUSES = frozenset({429, 502, 503, 504})
+
+
 class Booru:
     """
     Base Booru Image Board API
@@ -145,6 +176,11 @@ class Booru:
         max_redirects: int = 30,
         retries: RetryType = 3,
         max_attempt_number: int | None = 3,
+        proxy_cooldown_threshold: int | None = None,
+        proxy_cooldown_seconds: int | float = 600,
+        proxy_cooldown_statuses: (
+            Collection[int] | None
+        ) = DEFAULT_PROXY_COOLDOWN_STATUSES,
         rate_limit: int | float | None = 10.0,
         timeout: TimeoutType | None = None,
         multiplexed: bool = True,
@@ -181,11 +217,14 @@ class Booru:
             params (QueryParameterType, optional): Mapping of querystring data to attach to each Request <Request>. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued query parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             cookies (CookiesType, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Default authentication tuple or object to attach to every request emitted. Defaults to None.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. It can also be a tuple of such values; an element will be randomly selected per request. When not provided and trust_env is True, the process environment's proxy settings are captured as the default, giving an effective priority of request > session > env. Defaults to None.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. A tuple acts as a proxy pool: each outer attempt uses an available candidate that has not yet been tried by the current request, cycling only after all available candidates have been used. When not provided and trust_env is True, the process environment's proxy settings are captured as the default, giving an effective priority of request > session > env. Defaults to None.
             trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
             max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
             retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 3.
-            max_attempt_number (int, optional): Default outer retry budget (tenacity-level) for request methods. Used when a request method does not pass its own max_attempt_number. If both this and the request-level value are None, the underlying call falls back to a single attempt. Defaults to 3.
+            max_attempt_number (int, optional): Default outer retry budget (tenacity-level) for request methods. Used when a request method does not pass its own max_attempt_number. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If both this and the request-level value are None, the underlying call falls back to a single attempt. Defaults to 3.
+            proxy_cooldown_threshold (int, optional): Consecutive per-proxy failures before temporarily cooling down that proxy. Set to None to disable proxy cooldown. Defaults to None.
+            proxy_cooldown_seconds (int | float, optional): Seconds a failed proxy stays unavailable after reaching proxy_cooldown_threshold. When every configured proxy is cooling, proxy selection waits until the earliest cooldown expires before starting the HTTP request; this wait is outside the HTTP timeout and does not consume a tenacity attempt. Defaults to 600.
+            proxy_cooldown_statuses (Collection[int], optional): HTTP statuses that count as proxy failures when proxy cooldown is enabled. This is a proxy/IP health policy, not niquests' HTTP retry policy: 429 can indicate IP-level throttling, while 502/503/504 often indicate gateway or proxy-path failures. 413 is intentionally excluded because a too-large request is not a proxy health signal. Set to None to disable HTTP-status-based proxy cooldown; transport exceptions can still trigger cooldown when proxy_cooldown_threshold is set. Defaults to (429, 502, 503, 504).
             rate_limit (int | float, optional): Maximum requests per second. Defaults to 10.0.
             timeout (TimeoutType, optional): Default timeout configuration to be used if no timeout is provided in exposed methods. Defaults to None.
             multiplexed (bool, optional): Enable or disable concurrent request when the remote host support HTTP/2 onward. Defaults to True.
@@ -234,13 +273,14 @@ class Booru:
 
         if retries is not None:
             if isinstance(retries, int):
+                # 这是 HTTP retry 策略：urllib3/niquests 把 413/429/503 视为 Retry-After 相关状态码；它和 proxy cooldown 的健康判断不是同一层语义
                 retries = Retry(
                     total=retries,
                     redirect=True,
                     allowed_methods=frozenset(
                         ["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE"]
                     ),
-                    status_forcelist=frozenset([413, 429, 503]),
+                    status_forcelist=Retry.RETRY_AFTER_STATUS_CODES,
                     backoff_factor=1,
                     backoff_max=10,
                     raise_on_redirect=True,
@@ -308,7 +348,22 @@ class Booru:
         )
         self.client.proxies = {}
         self._proxies: ProxiesType | None = proxies
+        # 实例级代理配置通常会被每个 request 复用；初始化时建立不可变 prepared pool，避免高频请求重复 normalize 整个代理池
+        # selector 的已尝试索引不保存在 prepared pool 中，每个逻辑请求仍会创建独立状态，因此并发请求不会互相消耗代理候选
+        self._prepared_proxy_pool = prepare_proxy_pool(proxies or {})
+        # str 与 tuple[str] 不可能原地变化，可在 request 热路径直接 O(1) 复用；dict 或 tuple[dict] 仍需按内容重新取 cache，以保留调用方构造后修改 mapping 的既有行为
+        self._proxy_config_is_immutable = is_immutable_proxy_pool(proxies)
+        # 大型 request override 即使命中全局 prepared LRU，也需要 O(pool_size) 生成内容 key；保留最近一次不可变对象可让同一调用点连续复用时按 identity O(1) 命中
+        # 这里只缓存单项以控制状态复杂度；不同但内容相等的对象仍由全局内容缓存复用，可变 dict/tuple[dict] 则绝不走 identity 快路径
+        self._request_proxy_pool_cache: (
+            tuple[ProxiesType, PreparedProxyPool] | None
+        ) = None
         self._max_attempt_number: int | None = max_attempt_number
+        self._proxy_cooldown = ProxyCooldownTracker(
+            threshold=proxy_cooldown_threshold,
+            cooldown_seconds=proxy_cooldown_seconds,
+        )
+        self._proxy_cooldown_statuses = set(proxy_cooldown_statuses or ())
         self.client.trust_env = trust_env
         self.client.max_redirects = max_redirects
         self.client.verify = verify
@@ -357,6 +412,30 @@ class Booru:
         self.client.base_url = url
         logger.info(f"{self.__class__.__name__} base url set to: {url}")
 
+    def _record_proxy_outcome(
+        self,
+        selection: ProxySelection,
+        *,
+        failed: bool,
+    ) -> None:
+        """Record one proxy outcome and log when it starts a cooldown window.
+
+        Args:
+            selection (ProxySelection): Proxy metadata associated with the completed attempt.
+            failed (bool): Whether the attempt counts as a proxy-health failure.
+
+        Returns:
+            None: The shared cooldown tracker and logger are updated in place.
+        """
+        # selection.key 保留凭据用于区分代理身份，selection.log 只用于日志；任何日志调用都不能使用未脱敏 key
+        cooled_down = self._proxy_cooldown.record(selection.key, failed=failed)
+        if cooled_down:
+            logger.warning(
+                f"proxy.cooldown proxy={selection.log} "
+                f"failures={self._proxy_cooldown.threshold} "
+                f"cooldown={format_elapsed(self._proxy_cooldown.cooldown_seconds)}"
+            )
+
     async def request(
         self,
         method: str,
@@ -372,6 +451,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -394,8 +474,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. A tuple acts as a proxy pool: each outer attempt skips cooling candidates and prefers one not yet tried by the current request. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. Each outer attempt starts only after the current niquests retry sequence returns an unexpected HTTP error response or raises an exception, and a proxy pool is reselected between attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -407,41 +488,64 @@ class Booru:
         Returns:
             Response: Response object.
         """
-        parsed_url = urlparse(url)
-
-        if headers is None:
-            headers = {}
-        if accept_encoding:
-            headers.update({"Accept-Encoding": accept_encoding})
-        if referer:
-            headers.update({"Referer": referer})
+        if accept_encoding or referer:
+            # request shortcut 需要修改 headers 时先复制，既避免污染调用方在并发请求间复用的 mapping，也避免没有 shortcut 时创建无用空 dict
+            headers = dict(headers or {})
+            if accept_encoding:
+                headers["Accept-Encoding"] = accept_encoding
+            if referer:
+                headers["Referer"] = referer
 
         #!Fix httpx issue [当 URL 包含请求参数且设置了 params 参数时，URL 中的请求参数会意外消失](https://github.com/encode/httpx/issues/3621)
         #!这里保留该操作仅为为了兼容 httpx
         if params is None:
             params = {}
         else:
-            params = (
-                parse_qs(parsed_url.query) | dict(params)
+            # 只有显式 params 才需要解析 URL query；普通下载请求保留完整 URL 交给 niquests，跳过无用 urlparse
+            parsed_url = urlparse(url)
+            params = parse_qs(parsed_url.query) | dict(
+                params
             )  # 获取 URL 中的请求参数，并将其与 params 参数合并
         #!requests/httpx 无法*正确处理* dict 类型的请求参数，需要将其转换为 JSON 字符串
         for key, value in params.items():
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        # UNSET: 未传入，继承 Booru 实例配置（tuple 每次现挑）
+        # UNSET: 未传入，直接复用 Booru 初始化时预构建的代理池；若实例配置是 tuple，每个 request 仍有独立 selector 跳过 cooldown 并轮换未尝试候选
         # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
-        # 其他 : 显式覆盖，tuple 现挑，str 归一化为 dict
+        # 其他 : 显式覆盖；根据配置内容命中有界 prepared-pool cache，若是 tuple，同样跳过正在 cooldown 的 proxy 后再现挑
         if isinstance(proxies, UnsetType):
-            proxies = self._proxies or {}
+            if self._proxy_config_is_immutable:
+                prepared_proxy_pool = self._prepared_proxy_pool
+            else:
+                # 可变全局 mapping 每次按当前内容查询 LRU；未变化时只产生轻量 hash key，变化时则得到新的 prepared snapshot，避免长期使用陈旧代理
+                prepared_proxy_pool = prepare_proxy_pool(self._proxies or {})
         elif proxies is None:
-            proxies = {"no_proxy": "*"}
-        if isinstance(proxies, tuple):
-            proxies = random.choice(proxies)
-        if isinstance(proxies, str):
-            proxies = {"http": proxies, "https": proxies}
-        proxies = cast(dict[str, str], proxies)
-        proxy_log = format_proxy_log(url, proxies, self.client.base_url)
+            # niquests.utils 中的 select_proxy 对该值返回 None 并赋值给实际使用的 proxy，因此将会走 proxy is None 的分支，不会进入 self.proxy_manager[proxy] 筛选 proxy 的分支
+            prepared_proxy_pool = prepare_proxy_pool({"no_proxy": "*"})
+        else:
+            request_proxy_pool_cache = self._request_proxy_pool_cache
+            if (
+                request_proxy_pool_cache is not None
+                and request_proxy_pool_cache[0] is proxies
+            ):
+                # 同一不可变对象连续使用时直接复用 prepared pool；identity 判断不会把内容相等但生命周期不同的对象错误当成同一配置
+                prepared_proxy_pool = request_proxy_pool_cache[1]
+            else:
+                prepared_proxy_pool = prepare_proxy_pool(proxies)
+                if is_immutable_proxy_pool(proxies):
+                    # 赋值发生在第一个 await 之前，异步并发只能覆盖“最近一项”而不会让当前请求拿到另一配置对应的 pool；局部 prepared_proxy_pool 已经固定
+                    self._request_proxy_pool_cache = (proxies, prepared_proxy_pool)
+
+        # 一次逻辑请求开始后固定使用同一 trust_env 快照，使初始代理解析与 redirect outcome 遵循同一规则；底层 session 配置不应在请求执行期间并发修改
+        trust_env = bool(getattr(self.client, "trust_env", False))
+        # prepared pool 只共享不可变代理配置与 URL route 解析结果；request-local selector 每次新建，确保外层 retry 的“不放回”状态不会跨并发请求传播
+        proxy_selector = prepared_proxy_pool.selector(
+            url=url,
+            tracker=self._proxy_cooldown,
+            base_url=self.client.base_url,
+            trust_env=trust_env,
+        )
 
         # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
         if max_attempt_number is None:
@@ -450,6 +554,50 @@ class Booru:
             max_attempt_number = 1
         max_attempt_number = max(max_attempt_number, 1)
 
+        # expected_statuses 只用于“响应本身就是终态业务结果”的状态码；niquests 返回命中响应后，Booru 不再进行外层 retry、代理轮换或代理健康失败计数
+        # 若站点把 404 等错误码临时用作限流信号，则不能列入这里，否则会把本可通过后续 attempt 恢复的失败误判为终态并提前返回；需要影响代理健康时还应把该状态加入实例级 proxy_cooldown_statuses
+        expected_status_codes = set(expected_statuses or ())
+
+        # before_sleep formatter 通过闭包读取刚失败 attempt 的代理；首次 select 前先放入空值，避免 callback 闭包捕获一个尚未绑定的局部变量
+        proxy_selection = ProxySelection(proxies={}, key=None, log=None)
+
+        def format_request_retry_log(retry_state) -> str:
+            """Format the outer tenacity retry log with request and proxy context.
+
+            Args:
+                retry_state (RetryCallState): Tenacity state for the failed attempt and upcoming sleep.
+
+            Returns:
+                str: Retry message containing request, proxy, progress, sleep, and failure context.
+            """
+            if retry_state.outcome is None:
+                raise RuntimeError(
+                    "format_request_retry_log() called before outcome was set"
+                )
+            if retry_state.next_action is None:
+                raise RuntimeError(
+                    "format_request_retry_log() called before next_action was set"
+                )
+
+            # before_sleep 既可能收到异常，也可能收到 retry predicate 触发的返回值；当前实现通过 raise_for_status 把 unexpected HTTP status 转为异常，但仍保留上游完整分支以免未来 predicate 改为 result-based 后日志失真
+            if retry_state.outcome.failed:
+                exc = retry_state.outcome.exception()
+                reason = f"{exc.__class__.__name__}: {exc}"
+            else:
+                reason = f"returned {retry_state.outcome.result()}"
+
+            return format_retry_log(
+                method=method,
+                url=url,
+                proxy_log=proxy_selection.log,
+                next_attempt=retry_state.attempt_number + 1,
+                max_attempt_number=max_attempt_number,
+                sleep_seconds=retry_state.next_action.sleep,
+                reason=reason,
+            )
+
+        # niquests 内层 Retry 先在当前选中代理上处理 status_forcelist 与 transport retry；只有它返回 unexpected error response 或最终抛出 Python exception 后，tenacity 外层才开始下一次 attempt 并让 selector 换代理
+        # 双层 retry 的边界不能合并：niquests 内层固定使用同一个 outer attempt 已选中的代理，tenacity 外层既兜住底层泄漏的 Python-level exception，也负责在 unexpected HTTP error 后重新选择代理
         async for attempt in AsyncRetrying(
             sleep=asyncio.sleep,
             stop=stop_after_attempt(max_attempt_number),
@@ -457,31 +605,91 @@ class Booru:
             retry=retry_if_exception_type(Exception),
             before=before_log(logger, logging.DEBUG),
             after=after_log(logger, logging.DEBUG),
-            before_sleep=before_sleep_log(logger, logging.WARNING),
+            before_sleep=before_sleep_log(
+                logger,
+                logging.WARNING,
+                formatter=format_request_retry_log,
+            ),
             reraise=True,
         ):
             with attempt:
-                response: Response | AsyncResponse = await self.client.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    params=params,
-                    data=data,
-                    cookies=cookies,
-                    files=files,
-                    auth=auth,
-                    timeout=timeout,
-                    allow_redirects=allow_redirects,
-                    proxies=proxies,
-                    hooks=hooks,
-                    stream=stream,
-                    verify=verify,
-                    cert=cert,
-                    json=json,
-                )
-                await self.client.gather(response)
+                # 每轮外层 attempt 重新选择代理；代理池 selector 会优先选择本次 request 尚未尝试过且不在 cooldown 的候选
+                proxy_selection = await proxy_selector.select()
+                should_log_response = logger.isEnabledFor(logging.INFO)
+                start_time = time.perf_counter() if should_log_response else None
+                try:
+                    response: Response | AsyncResponse = await self.client.request(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        params=params,
+                        data=data,
+                        cookies=cookies,
+                        files=files,
+                        auth=auth,
+                        timeout=timeout,
+                        allow_redirects=allow_redirects,
+                        proxies=proxy_selection.proxies,
+                        hooks=hooks,
+                        stream=stream,
+                        verify=verify,
+                        cert=cert,
+                        json=json,
+                    )
+                    await self.client.gather(response)
+                except Exception as exc:
+                    failed_request_url = getattr(
+                        getattr(exc, "request", None),
+                        "url",
+                        None,
+                    )
+                    if (
+                        isinstance(failed_request_url, str)
+                        and failed_request_url != url
+                    ):
+                        # redirect 后的 transport exception 关联最终 PreparedRequest；按该 URL 重算 identity，避免把失败记到初始 host 使用的健康代理
+                        proxy_selection = resolve_outcome_proxy(
+                            proxy_selection,
+                            failed_request_url,
+                            trust_env=trust_env,
+                        )
+                    # transport、adapter、gather 或 hook 抛出的异常都表示当前代理未完成请求；先记入健康状态，再交给 tenacity 决定是否还有外层预算
+                    self._record_proxy_outcome(proxy_selection, failed=True)
+                    raise
 
-                if attempt.retry_state.attempt_number < max_attempt_number:
+                status_code = getattr(response, "status_code", None)
+                final_request_url = getattr(
+                    getattr(response, "request", None),
+                    "url",
+                    None,
+                )
+                if (
+                    isinstance(final_request_url, str)
+                    and (
+                        final_request_url != url
+                        or bool(getattr(response, "history", None))
+                    )
+                ):
+                    # niquests 会在 redirect 时按新 host/scheme 重新选择 proxy；状态、日志与 cooldown 必须归属最终响应实际使用的 route，而不是初始 URL 的 route
+                    proxy_selection = resolve_outcome_proxy(
+                        proxy_selection,
+                        final_request_url,
+                        trust_env=trust_env,
+                    )
+                is_expected_status = status_code in expected_status_codes
+                failed_status = (
+                    isinstance(status_code, int)
+                    and status_code in self._proxy_cooldown_statuses
+                    and not is_expected_status
+                )
+                # 命中 expected_statuses 表示调用方接受该响应作为终态业务结果，不应污染代理健康；其他状态只有显式列入 cooldown policy 才累计失败
+                self._record_proxy_outcome(proxy_selection, failed=failed_status)
+
+                # 非最后一次 attempt 对 unexpected 4xx/5xx 调用 raise_for_status，使 niquests status_forcelist 之外的错误也能消耗外层 retry 并更换代理；最后一次则返回响应供调用方自行检查，不在封装层强制抛异常
+                if (
+                    attempt.retry_state.attempt_number < max_attempt_number
+                    and not is_expected_status
+                ):
                     response.raise_for_status()
 
                 # 统一为 sync Response：
@@ -492,16 +700,45 @@ class Booru:
 
                 response: Response = cast(Response, response)
 
-                logger.info(
-                    " ".join(
-                        [
-                            f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
-                            f"via {proxy_log}" if proxy_log else "",
-                        ]
-                    ).strip(),
-                )
+                # INFO 被关闭时跳过 repr、history、body size 与格式化，避免批量下载在热路径为不可见日志支付额外成本
+                if should_log_response:
+                    assert start_time is not None
+                    content = getattr(response, "_content", None)
+                    if content is None:
+                        content = getattr(response, "content", None)
+                    body_size = get_body_size(content)
+                    redirects = len(getattr(response, "history", []) or [])
+                    elapsed = time.perf_counter() - start_time
+
+                    logger.info(
+                        " ".join(
+                            [
+                                f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
+                                (
+                                    f"via {proxy_selection.log}"
+                                    if proxy_selection.log
+                                    else ""
+                                ),
+                                format_response_metrics(
+                                    attempt_number=attempt.retry_state.attempt_number,
+                                    max_attempt_number=max_attempt_number,
+                                    elapsed=elapsed,
+                                    body_size=body_size,
+                                    redirects=redirects,
+                                    expected_statuses=(
+                                        expected_status_codes
+                                        if is_expected_status
+                                        else None
+                                    ),
+                                ),
+                            ]
+                        ).strip(),
+                    )
 
                 return response
+
+        # stop_after_attempt 与 reraise=True 理论上保证循环只能 return 或抛异常；保留显式终止用于记录该不变量并满足静态分析器
+        raise RuntimeError("request retry loop exited without a response")
 
     async def get(
         self,
@@ -517,6 +754,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -538,8 +776,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -564,6 +803,7 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -587,6 +827,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -608,8 +849,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -634,6 +876,7 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -657,6 +900,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -678,8 +922,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -704,6 +949,7 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -727,6 +973,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -748,8 +995,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -774,6 +1022,7 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -797,6 +1046,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -818,8 +1068,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -844,6 +1095,7 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -867,6 +1119,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -888,8 +1141,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -914,6 +1168,7 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,
@@ -937,6 +1192,7 @@ class Booru:
         allow_redirects: bool = True,
         proxies: ProxiesType | None | UnsetType = UNSET,
         max_attempt_number: int | None = None,
+        expected_statuses: Collection[int] | None = None,
         hooks: AsyncHookType[PreparedRequest | Response] | None = None,
         stream: bool | None = None,
         verify: TLSVerifyType | None = None,
@@ -958,8 +1214,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If provided, an element will be randomly selected from this tuple to serve as the proxies. If left as UNSET, falls back to the proxies configured on the Booru instance (re-picked per request if a tuple). Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. If the final attempt returns an unexpected 4xx/5xx response, the response is returned without raising HTTPError so the caller can inspect it. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that represent terminal business outcomes after niquests returns a response. Matched statuses bypass outer status retry, proxy rotation, and proxy-health failure recording; unmatched 4xx/5xx responses consume the available outer attempts, while the final response is returned without raising HTTPError when the budget is exhausted. Do not include a transient failure signal, such as a site-specific 404 used for rate limiting, when it should recover through outer retry; leave it unexpected and include it in the instance's proxy_cooldown_statuses when it should also count against proxy health. This option does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -984,6 +1241,7 @@ class Booru:
             allow_redirects=allow_redirects,
             proxies=proxies,
             max_attempt_number=max_attempt_number,
+            expected_statuses=expected_statuses,
             hooks=hooks,
             stream=stream,
             verify=verify,

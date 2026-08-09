@@ -8,9 +8,9 @@ import pandas as pd
 from niquests.exceptions import HTTPError, JSONDecodeError, RequestException
 
 from waifuboard.booru import Booru
-from waifuboard.danbooru import DanbooruPools, DanbooruPosts
-from waifuboard.moebooru import YanderePools, YanderePosts
-from waifuboard.safebooru import SafebooruPosts
+from waifuboard.sites.danbooru import DanbooruPools, DanbooruPosts
+from waifuboard.sites.moebooru import YanderePools, YanderePosts
+from waifuboard.sites.safebooru import SafebooruPosts
 from waifuboard.typing import DownloadItem, DownloadResult, PageResult
 
 

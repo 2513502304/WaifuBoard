@@ -3,17 +3,16 @@ Safebooru Image Board API implementation.
 """
 
 import os
-import re
 from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
-from lxml import etree
 
-from .booru import Booru, BooruComponent
-from .utils import logger
+from ..booru import Booru, BooruComponent
+from ..utils import format_request_error, logger
+from ._pagination import max_query_parameter
 
 __all__ = [
     # base classes
@@ -119,20 +118,15 @@ class SafebooruPosts(SafebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大 pid
-            tree = etree.HTML(response.text)
-            # 当前页为 b 标签，只有一页时，仅存在 b 标签；超过一页时，余下的页为 a 标签，且最后一页的 a 标签中含有 alt="last page" 属性
-            pagination = tree.xpath(
-                '//div[@class="pagination"]/a[@alt="last page"]/@href'
+            # Safebooru 在 last-page href 中携带从 0 开始的 pid；共享 helper 使用 URL 解析保留这一站点语义，而不是把它误当成从 1 开始的页码
+            return max_query_parameter(
+                response.text,
+                '//div[@class="pagination"]/a[@alt="last page"]/@href',
+                parameter="pid",
+                default=0,
             )
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                last_pid = re.findall(r"pid=(\d+)", pagination[0])[0]
-                return int(last_pid)
-            else:  # 不存在分页器，说明该页面只有一页
-                return 0
         except RequestException as exc:
-            request_url = getattr(exc.request, "url", url)
-            logger.error(f"{exc.__class__.__name__} for {request_url} - {exc}")
+            logger.error(format_request_error(exc))
             # 最大 pid 未知时不能伪装成只有一页，否则 all_page 会静默截断；让请求错误向上传播，由调用方决定何时恢复扫描
             raise
 
@@ -274,7 +268,7 @@ class SafebooruPosts(SafebooruComponent):
                 )
 
                 #!超过 MAX_PID 限制时，不能获取忽略的帖子，因为再次使用 limit 参数请求下一页时会导致 pid 超过 200000
-                ignored_posts: bool = False
+                ignored_posts = False
 
             async for res in self.client.concurrent_fetch_page(
                 url,

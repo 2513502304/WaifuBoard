@@ -10,10 +10,10 @@ import pandas as pd
 import orjson
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
-from lxml import etree
 
-from .booru import Booru, BooruComponent
-from .utils import logger
+from ..booru import Booru, BooruComponent
+from ..utils import format_request_error, logger
+from ._pagination import max_numeric_link_text
 
 __all__ = [
     # base classes
@@ -119,17 +119,13 @@ class YanderePosts(MoebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
-            pagination = tree.xpath('//div[@class="pagination"]/a[@aria-label]/text()')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # yande.re 会在数字链接后追加 Next；共享 Parsel helper 只读取数字标签，避免导航文案或链接顺序变化导致页码解析错误
+            return max_numeric_link_text(
+                response.text,
+                '//div[@class="pagination"]/a[@aria-label]',
+            )
         except RequestException as exc:
-            request_url = getattr(exc.request, "url", url)
-            logger.error(f"{exc.__class__.__name__} for {request_url} - {exc}")
+            logger.error(format_request_error(exc))
             # 最大页未知时不能伪装成只有一页，否则 all_page 会静默截断；让请求错误向上传播，由调用方决定何时恢复扫描
             raise
 
@@ -635,17 +631,13 @@ class YanderePools(MoebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
-            pagination = tree.xpath('//div[@class="pagination"]/a[@aria-label]/text()')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # pool 与 post 使用相同的分页 DOM；只提取数字链接可兼容导航链接文案或顺序调整
+            return max_numeric_link_text(
+                response.text,
+                '//div[@class="pagination"]/a[@aria-label]',
+            )
         except RequestException as exc:
-            request_url = getattr(exc.request, "url", url)
-            logger.error(f"{exc.__class__.__name__} for {request_url} - {exc}")
+            logger.error(format_request_error(exc))
             # 最大页未知时不能伪装成只有一页，否则 all_page 会静默截断；让请求错误向上传播，由调用方决定何时恢复扫描
             raise
 
@@ -890,10 +882,10 @@ class YanderePools(MoebooruComponent):
             names = pools["name"]
 
             # 遍历图集列表
-            for id, name in zip(ids, names):
+            for pool_id, name in zip(ids, names, strict=True):
                 # 获取图集 ID 下所有帖子
                 posts = await self.list_posts(
-                    id=id,
+                    id=pool_id,
                 )
                 if posts is None:
                     # None 表示请求失败而非空图集；单独记录失败原因，避免把未抓到的数据误报为业务上的空集合
