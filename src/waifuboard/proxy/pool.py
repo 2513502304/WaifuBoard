@@ -33,7 +33,7 @@ _EnvironmentProxySnapshots: TypeAlias = tuple[_EnvironmentProxySnapshot, ...]
 # prepared cache 的一项代表一整份代理配置快照，而不是池中的一个 proxy；128 项足以覆盖全局池和少量 request override，同时限制动态配置长期运行时的内存占用
 PREPARED_PROXY_CACHE_SIZE = 128
 # niquests.proxy_manager 的每个 cache value 只对应一个实际使用过的 proxy，而这里每个 route value 都包含整份代理池的解析结果，不能按 niquests 的无界字典处理
-# functools.lru_cache 装饰的是类方法函数，因此 32 是所有 PreparedProxyPool 实例共享的“配置快照 + scheme/authority + 环境代理快照”总上限；常见 API/CDN origin 可以直接命中，数千代理的池也不会因 256 份完整 route 快照长期占用大量内存
+# functools.lru_cache 装饰的是类方法函数，因此当前 32 项上限由所有 PreparedProxyPool 实例共同使用，cache key 包含“配置快照 + scheme/authority + 环境代理快照”；它仍能覆盖常见 API/CDN origin，并将旧版 256 项容量可能长期保留的大型代理池 route 快照限制在更小范围内
 PROXY_ROUTE_CACHE_SIZE = 32
 
 
