@@ -400,17 +400,16 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.proxy.resolve_proxy", wraps=resolve_proxy) as resolver:
-            with patch(
-                "waifuboard.proxy.random.choice",
-                side_effect=lambda choices: choices[0],
-            ):
-                with patch("waifuboard.booru.asyncio.sleep"):
-                    with self.assertLogs("WaifuBoard", level="WARNING"):
-                        response = await booru.get("https://example.test/retry.json")
+        with patch(
+            "waifuboard.proxy.random.choice",
+            side_effect=lambda choices: choices[0],
+        ):
+            with patch("waifuboard.booru.asyncio.sleep"):
+                with self.assertLogs("WaifuBoard", level="WARNING"):
+                    response = await booru.get("https://example.test/retry.json")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(resolver.call_count, 2)
+        self.assertEqual(client.request_count, 2)
         self.assertEqual(
             client.request_history[0]["proxies"],
             {"http": "http://proxy-a.test:8080", "https": "http://proxy-a.test:8080"},
@@ -454,6 +453,7 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_proxy_cooldown_waits_when_all_proxies_are_unavailable(self):
+        now = [0.0]
         booru = Booru(
             default_headers=False,
             logger_level=logging.DEBUG,
@@ -461,7 +461,12 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
             max_attempt_number=1,
             proxies=("http://proxy-a.test:8080", "http://proxy-b.test:8080"),
             proxy_cooldown_threshold=1,
-            proxy_cooldown_seconds=0.01,
+            proxy_cooldown_seconds=60,
+        )
+        booru._proxy_cooldown = ProxyCooldownTracker(
+            threshold=1,
+            cooldown_seconds=60,
+            clock=lambda: now[0],
         )
         client = CapturingClient(
             [
@@ -472,13 +477,24 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.proxy.random.choice", side_effect=lambda choices: choices[0]):
-            with self.assertLogs("WaifuBoard", level="DEBUG"):
-                await booru.get("https://example.test/a.json")
-                await booru.get("https://example.test/b.json")
-            with self.assertLogs("WaifuBoard", level="WARNING") as records:
-                await booru.get("https://example.test/c.json")
+        async def advance_clock(seconds):
+            now[0] += seconds
 
+        with patch(
+            "waifuboard.proxy.random.choice",
+            side_effect=lambda choices: choices[0],
+        ):
+            with patch(
+                "waifuboard.proxy.asyncio.sleep",
+                side_effect=advance_clock,
+            ) as sleep:
+                with self.assertLogs("WaifuBoard", level="DEBUG"):
+                    await booru.get("https://example.test/a.json")
+                    await booru.get("https://example.test/b.json")
+                with self.assertLogs("WaifuBoard", level="WARNING") as records:
+                    await booru.get("https://example.test/c.json")
+
+        sleep.assert_awaited_once_with(60.0)
         self.assertTrue(
             any("All proxies are cooling down" in record for record in records.output)
         )
