@@ -3,6 +3,7 @@ Safebooru Image Board API implementation.
 """
 
 import os
+from collections import deque
 from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
@@ -268,7 +269,7 @@ class SafebooruPosts(SafebooruComponent):
                 )
 
                 #!超过 MAX_PID 限制时，不能获取忽略的帖子，因为再次使用 limit 参数请求下一页时会导致 pid 超过 200000
-                ignored_posts: bool = False
+                ignored_posts = False
 
             async for res in self.client.concurrent_fetch_page(
                 url,
@@ -374,6 +375,14 @@ class SafebooruPosts(SafebooruComponent):
 
             # 下载帖子
             urls = posts["file_url"]  # 帖子 URLs
+            if save_raws or save_tags:
+                # 下载 helper 按完成顺序返回结果，并会省略已存在文件对应的 URL，因此不能用结果序号反推源行；这里只在需要 sidecar 时按 URL 保存源索引队列，重复 URL 固定按输入顺序逐个消费
+                source_indices_by_url = {
+                    file_url: deque(indices)
+                    for file_url, indices in posts.groupby(
+                        "file_url", sort=False
+                    ).groups.items()
+                }
             if id is not None:  # 存储文件目录
                 posts_directory = os.path.join(self.directory, f"{id}")  # 帖子文件目录
                 images_directory = os.path.join(
@@ -388,11 +397,9 @@ class SafebooruPosts(SafebooruComponent):
                 )  # 图像文件目录
 
             success_count, failure_count = 0, 0
-            async for index, res in aenumerate(
-                self.client.concurrent_download_file(
-                    urls,
-                    images_directory,
-                )
+            async for res in self.client.concurrent_download_file(
+                urls,
+                images_directory,
             ):
                 if res is None:
                     failure_count += 1
@@ -401,11 +408,13 @@ class SafebooruPosts(SafebooruComponent):
                     success_count += 1
 
                 url, filepath = res
+                if save_raws or save_tags:
+                    source_index = source_indices_by_url[url].popleft()
 
                 # 保存帖子 api 响应的元数据（json 格式）
                 if save_raws:
                     # 保存元数据
-                    post_raws = posts.loc[[index]]  # 筛选后的元数据
+                    post_raws = posts.loc[[source_index]]  # 筛选后的元数据
                     raws_directory = os.path.join(
                         posts_directory, "raws"
                     )  # 元数据文件目录
@@ -422,7 +431,7 @@ class SafebooruPosts(SafebooruComponent):
                 # 保存标签
                 if save_tags:
                     # 帖子标签
-                    post_tags = posts.at[index, "tags"]  # 筛选后的 tags
+                    post_tags = posts.at[source_index, "tags"]  # 筛选后的 tags
                     tags_directory = os.path.join(
                         posts_directory, "tags"
                     )  # 标签文件目录

@@ -69,6 +69,16 @@ class PaginationParserTests(unittest.TestCase):
 
 
 class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def _assert_download_sidecars_follow_result_urls(self, component):
+        """Assert sidecars follow returned URLs instead of completion positions."""
+        await component.download(save_raws=True, save_tags=True)
+
+        self.assertEqual(component.client.saved_raw_ids, [3, 1, 4])
+        self.assertEqual(
+            component.client.saved_tags,
+            ["tag-b", "tag-a-first", "tag-a-second"],
+        )
+
     async def test_pagination_probes_return_site_specific_fallbacks(self):
         error = RequestException(
             "unavailable",
@@ -149,6 +159,115 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
             await pools.download()
 
         self.assertEqual(client.download_calls, [])
+
+    async def test_yandere_post_download_matches_sidecars_by_returned_url(self):
+        class DownloadClient:
+            base_url = "https://yande.re"
+
+            def __init__(self, directory):
+                self.directory = directory
+                self.saved_raw_ids = []
+                self.saved_tags = []
+
+            async def concurrent_download_file(self, *args, **kwargs):
+                yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
+                yield None
+                yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
+                yield ("https://example.test/a.jpg", f"{self.directory}/a-2.jpg")
+
+            async def save_raws(self, raws, **kwargs):
+                self.saved_raw_ids.append(raws.iloc[0]["id"])
+
+            async def save_tags(self, tags, **kwargs):
+                self.saved_tags.append(tags)
+
+        with tempfile.TemporaryDirectory() as directory:
+            posts = YanderePosts(DownloadClient(directory))
+
+            async def fake_list(**kwargs):
+                yield [
+                    {"id": 1, "file_url": "https://example.test/a.jpg", "tags": "tag-a-first"},
+                    {"id": 2, "file_url": "https://example.test/skipped.jpg", "tags": "tag-skipped"},
+                    {"id": 3, "file_url": "https://example.test/b.jpg", "tags": "tag-b"},
+                    {"id": 4, "file_url": "https://example.test/a.jpg", "tags": "tag-a-second"},
+                ]
+
+            posts.list = fake_list
+            await self._assert_download_sidecars_follow_result_urls(posts)
+
+    async def test_yandere_pool_download_matches_sidecars_by_returned_url(self):
+        class DownloadClient:
+            base_url = "https://yande.re"
+
+            def __init__(self, directory):
+                self.directory = directory
+                self.saved_raw_ids = []
+                self.saved_tags = []
+
+            async def concurrent_download_file(self, *args, **kwargs):
+                yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
+                yield None
+                yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
+                yield ("https://example.test/a.jpg", f"{self.directory}/a-2.jpg")
+
+            async def save_raws(self, raws, **kwargs):
+                self.saved_raw_ids.append(raws.iloc[0]["id"])
+
+            async def save_tags(self, tags, **kwargs):
+                self.saved_tags.append(tags)
+
+        with tempfile.TemporaryDirectory() as directory:
+            pools = YanderePools(DownloadClient(directory))
+
+            async def fake_list_pools(**kwargs):
+                yield [{"id": 10, "name": "sample-pool"}]
+
+            async def fake_list_posts(**kwargs):
+                return [
+                    {"id": 1, "file_url": "https://example.test/a.jpg", "tags": "tag-a-first"},
+                    {"id": 2, "file_url": "https://example.test/skipped.jpg", "tags": "tag-skipped"},
+                    {"id": 3, "file_url": "https://example.test/b.jpg", "tags": "tag-b"},
+                    {"id": 4, "file_url": "https://example.test/a.jpg", "tags": "tag-a-second"},
+                ]
+
+            pools.list_pools = fake_list_pools
+            pools.list_posts = fake_list_posts
+            await self._assert_download_sidecars_follow_result_urls(pools)
+
+    async def test_safebooru_post_download_matches_sidecars_by_returned_url(self):
+        class DownloadClient:
+            base_url = "https://safebooru.org"
+
+            def __init__(self, directory):
+                self.directory = directory
+                self.saved_raw_ids = []
+                self.saved_tags = []
+
+            async def concurrent_download_file(self, *args, **kwargs):
+                yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
+                yield None
+                yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
+                yield ("https://example.test/a.jpg", f"{self.directory}/a-2.jpg")
+
+            async def save_raws(self, raws, **kwargs):
+                self.saved_raw_ids.append(raws.iloc[0]["id"])
+
+            async def save_tags(self, tags, **kwargs):
+                self.saved_tags.append(tags)
+
+        with tempfile.TemporaryDirectory() as directory:
+            posts = SafebooruPosts(DownloadClient(directory))
+
+            async def fake_list(**kwargs):
+                yield [
+                    {"id": 1, "file_url": "https://example.test/a.jpg", "tags": "tag-a-first"},
+                    {"id": 2, "file_url": "https://example.test/skipped.jpg", "tags": "tag-skipped"},
+                    {"id": 3, "file_url": "https://example.test/b.jpg", "tags": "tag-b"},
+                    {"id": 4, "file_url": "https://example.test/a.jpg", "tags": "tag-a-second"},
+                ]
+
+            posts.list = fake_list
+            await self._assert_download_sidecars_follow_result_urls(posts)
 
     async def test_safebooru_list_uses_native_zero_based_pid(self):
         class PaginationClient:
