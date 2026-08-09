@@ -42,7 +42,14 @@ logger = logging.getLogger("WaifuBoard")
 
 
 def format_bytes(size: int | None) -> str:
-    """Return a compact human-readable byte size for request logs."""
+    """Return a compact human-readable byte size for request logs.
+
+    Args:
+        size (int | None): Body size in bytes, or None when the size is unknown.
+
+    Returns:
+        str: Human-readable size using the shortest suitable binary unit.
+    """
     if size is None:
         return "unknown"
 
@@ -63,7 +70,14 @@ def format_bytes(size: int | None) -> str:
 
 
 def format_elapsed(seconds: float) -> str:
-    """Return elapsed seconds using a stable short precision for logs."""
+    """Return elapsed seconds using a stable short precision for logs.
+
+    Args:
+        seconds (float): Elapsed or waiting duration in seconds.
+
+    Returns:
+        str: Duration formatted with three decimal places and an ``s`` suffix.
+    """
     return f"{seconds:.3f}s"
 
 
@@ -76,7 +90,19 @@ def format_response_metrics(
     redirects: int,
     expected_statuses: set[int] | None = None,
 ) -> str:
-    """Format compact response-side metrics appended to the request log line."""
+    """Format compact response-side metrics appended to the request log line.
+
+    Args:
+        attempt_number (int): Current outer request attempt number.
+        max_attempt_number (int): Maximum number of outer request attempts.
+        elapsed (float): End-to-end duration of the completed attempt in seconds.
+        body_size (int | None): Response body size in bytes, or None when unknown.
+        redirects (int): Number of redirects followed by the request.
+        expected_statuses (set[int] | None): Expected status codes matched by the response.
+
+    Returns:
+        str: Parenthesized metrics suitable for appending to one request log line.
+    """
     metrics = [
         f"attempt={attempt_number}/{max_attempt_number}",
         f"elapsed={format_elapsed(elapsed)}",
@@ -92,7 +118,14 @@ def format_response_metrics(
 
 
 def get_body_size(content: object) -> int | None:
-    """Best-effort response body size without forcing another decode pass."""
+    """Best-effort response body size without forcing another decode pass.
+
+    Args:
+        content (object): Cached response content in bytes-like or text form.
+
+    Returns:
+        int | None: Encoded body size in bytes, or None for unsupported content types.
+    """
     if isinstance(content, bytes | bytearray | memoryview):
         return len(content)
     if isinstance(content, str):
@@ -110,7 +143,20 @@ def format_retry_log(
     sleep_seconds: float,
     reason: str,
 ) -> str:
-    """Format one retry warning line with request context and sleep duration."""
+    """Format one retry warning line with request context and sleep duration.
+
+    Args:
+        method (str): HTTP method of the request being retried.
+        url (str): Request URL associated with the retry.
+        proxy_log (str | None): Redacted proxy identifier displayed in logs.
+        next_attempt (int): Attempt number that will run after the sleep.
+        max_attempt_number (int): Maximum number of outer request attempts.
+        sleep_seconds (float): Delay before the next attempt in seconds.
+        reason (str): Exception or result that caused the retry.
+
+    Returns:
+        str: Compact warning message containing retry progress and context.
+    """
     proxy_part = f" via {proxy_log}" if proxy_log else ""
     return (
         f"{method} {url} retry in {format_elapsed(sleep_seconds)}{proxy_part} "
@@ -136,9 +182,28 @@ def before_sleep_log(
     sec_format: str = "%.3g",
     formatter: typing.Callable[["RetryCallState"], str] | None = None,
 ) -> typing.Callable[["RetryCallState"], None]:
-    """Return a tenacity before-sleep callback with attempt progress in logs."""
+    """Return a tenacity before-sleep callback with attempt progress in logs.
+
+    Args:
+        logger (_utils.LoggerProtocol): Logger used to emit retry messages.
+        log_level (int): Logging level used for retry messages.
+        exc_info (bool): Whether exception tracebacks should be attached to failed outcomes.
+        sec_format (str): Format string used for sleep seconds in the default message.
+        formatter (Callable[[RetryCallState], str] | None): Optional business-specific message formatter.
+
+    Returns:
+        Callable[[RetryCallState], None]: Callback suitable for tenacity's ``before_sleep`` hook.
+    """
 
     def log_it(retry_state: "RetryCallState") -> None:
+        """Log one retry state immediately before tenacity sleeps.
+
+        Args:
+            retry_state (RetryCallState): Tenacity state for the failed attempt and upcoming sleep.
+
+        Returns:
+            None: The callback only emits a log record.
+        """
         local_exc_info: BaseException | bool | None
 
         if retry_state.outcome is None:

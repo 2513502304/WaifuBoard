@@ -107,6 +107,39 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(tracker.record("http://proxy.test:8080", failed=True))
         self.assertTrue(tracker.is_available("http://proxy.test:8080"))
 
+    def test_proxy_cooldown_tracker_releases_proxy_after_threshold_and_expiry(self):
+        now = [10.0]
+        tracker = ProxyCooldownTracker(
+            threshold=2,
+            cooldown_seconds=60,
+            clock=lambda: now[0],
+        )
+
+        self.assertFalse(tracker.record("http://proxy.test:8080", failed=True))
+        self.assertTrue(tracker.is_available("http://proxy.test:8080"))
+        self.assertTrue(tracker.record("http://proxy.test:8080", failed=True))
+        self.assertFalse(tracker.is_available("http://proxy.test:8080"))
+        self.assertEqual(tracker.remaining("http://proxy.test:8080"), 60.0)
+
+        now[0] = 70.0
+        self.assertTrue(tracker.is_available("http://proxy.test:8080"))
+        self.assertEqual(tracker.remaining("http://proxy.test:8080"), 0.0)
+
+    def test_proxy_cooldown_tracker_prunes_expired_one_off_proxies(self):
+        now = [0.0]
+        tracker = ProxyCooldownTracker(
+            threshold=1,
+            cooldown_seconds=60,
+            clock=lambda: now[0],
+        )
+
+        tracker.record("http://proxy-a.test:8080", failed=True)
+        now[0] = 61.0
+        tracker.record("http://proxy-b.test:8080", failed=True)
+
+        self.assertNotIn("http://proxy-a.test:8080", tracker._cooldown_until)
+        self.assertIn("http://proxy-b.test:8080", tracker._cooldown_until)
+
     async def test_request_level_none_proxies_disable_proxy_without_empty_urls(self):
         booru = Booru(
             default_headers=False,
@@ -144,6 +177,21 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bytes=1.5 KB", message)
         self.assertIn("redirects=0", message)
 
+    async def test_disabled_info_logging_skips_response_metric_work(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        client = CapturingClient()
+        booru.client = client
+
+        with patch("waifuboard.booru.get_body_size") as get_body_size:
+            await booru.get("https://example.test/data.json", proxies=None)
+
+        get_body_size.assert_not_called()
+
     async def test_expected_statuses_do_not_trigger_outer_status_retry(self):
         booru = Booru(
             default_headers=False,
@@ -169,7 +217,7 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("expected=404", records.output[-1])
 
-    async def test_post_forwards_expected_statuses(self):
+    async def test_http_verb_helpers_forward_expected_statuses(self):
         booru = Booru(
             default_headers=False,
             logger_level=logging.INFO,
@@ -179,22 +227,29 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         client = CapturingClient(DummyResponse(404, "Not Found"))
         booru.client = client
 
+        verbs = ("post", "put", "delete", "head", "patch", "options")
         with self.assertLogs("WaifuBoard", level="INFO") as records:
-            response = await booru.post(
-                "https://example.test/missing.json",
-                expected_statuses={404},
-            )
+            for verb in verbs:
+                with self.subTest(verb=verb):
+                    response = await getattr(booru, verb)(
+                        "https://example.test/missing.json",
+                        expected_statuses={404},
+                    )
+                    self.assertEqual(response.status_code, 404)
 
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(client.request_count, 1)
-        self.assertIn("expected=404", records.output[-1])
+        self.assertEqual(client.request_count, len(verbs))
+        self.assertEqual(
+            sum("expected=404" in record for record in records.output),
+            len(verbs),
+        )
 
-    async def test_status_responses_do_not_use_outer_tenacity_retry(self):
+    async def test_unexpected_status_retries_outer_and_rotates_proxy(self):
         booru = Booru(
             default_headers=False,
-            logger_level=logging.INFO,
+            logger_level=logging.WARNING,
             trust_env=False,
             max_attempt_number=2,
+            proxies=("http://proxy-a.test:8080", "http://proxy-b.test:8080"),
         )
         client = CapturingClient(
             [
@@ -204,11 +259,30 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with self.assertLogs("WaifuBoard", level="INFO"):
-            response = await booru.get("https://example.test/unavailable.json")
+        with patch(
+            "waifuboard.proxy.random.choice", side_effect=lambda choices: choices[0]
+        ):
+            with patch("waifuboard.booru.asyncio.sleep"):
+                with self.assertLogs("WaifuBoard", level="WARNING") as records:
+                    response = await booru.get(
+                        "https://example.test/unavailable.json"
+                    )
 
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(client.request_count, 1)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(client.request_count, 2)
+        self.assertEqual(
+            client.request_history[0]["proxies"],
+            {"http": "http://proxy-a.test:8080", "https": "http://proxy-a.test:8080"},
+        )
+        self.assertEqual(
+            client.request_history[1]["proxies"],
+            {"http": "http://proxy-b.test:8080", "https": "http://proxy-b.test:8080"},
+        )
+        retry_log = records.output[-1]
+        self.assertIn("GET https://example.test/unavailable.json retry in", retry_log)
+        self.assertIn("via http://proxy-a.test:8080", retry_log)
+        self.assertIn("attempt=2/2", retry_log)
+        self.assertIn("reason=HTTPError:", retry_log)
 
     async def test_non_cooldown_status_does_not_poison_proxy(self):
         booru = Booru(
@@ -228,7 +302,7 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.booru.random.choice", side_effect=lambda choices: choices[0]):
+        with patch("waifuboard.proxy.random.choice", side_effect=lambda choices: choices[0]):
             with self.assertLogs("WaifuBoard", level="INFO"):
                 await booru.get("https://example.test/missing.json")
                 await booru.get("https://example.test/next.json")
@@ -260,7 +334,7 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.booru.random.choice", side_effect=lambda choices: choices[0]):
+        with patch("waifuboard.proxy.random.choice", side_effect=lambda choices: choices[0]):
             with self.assertLogs("WaifuBoard", level="INFO"):
                 await booru.get(
                     "https://example.test/rate-limited.json",
@@ -296,7 +370,7 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.booru.random.choice", side_effect=lambda choices: choices[0]):
+        with patch("waifuboard.proxy.random.choice", side_effect=lambda choices: choices[0]):
             with self.assertLogs("WaifuBoard", level="INFO"):
                 await booru.get("https://example.test/rate-limited.json")
                 await booru.get("https://example.test/next.json")
@@ -317,8 +391,6 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
             trust_env=False,
             max_attempt_number=2,
             proxies=("http://proxy-a.test:8080", "http://proxy-b.test:8080"),
-            proxy_cooldown_threshold=1,
-            proxy_cooldown_seconds=60,
         )
         client = CapturingClient(
             [
@@ -328,11 +400,17 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.booru.random.choice", side_effect=lambda choices: choices[0]):
-            with self.assertLogs("WaifuBoard", level="WARNING"):
-                response = await booru.get("https://example.test/retry.json")
+        with patch("waifuboard.proxy.resolve_proxy", wraps=resolve_proxy) as resolver:
+            with patch(
+                "waifuboard.proxy.random.choice",
+                side_effect=lambda choices: choices[0],
+            ):
+                with patch("waifuboard.booru.asyncio.sleep"):
+                    with self.assertLogs("WaifuBoard", level="WARNING"):
+                        response = await booru.get("https://example.test/retry.json")
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(resolver.call_count, 2)
         self.assertEqual(
             client.request_history[0]["proxies"],
             {"http": "http://proxy-a.test:8080", "https": "http://proxy-a.test:8080"},
@@ -360,7 +438,7 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.booru.random.choice", side_effect=lambda choices: choices[0]):
+        with patch("waifuboard.proxy.random.choice", side_effect=lambda choices: choices[0]):
             with self.assertLogs("WaifuBoard", level="DEBUG") as records:
                 await booru.get("https://example.test/rate-limited.json")
                 await booru.get("https://example.test/recovered.json")
@@ -394,7 +472,7 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        with patch("waifuboard.booru.random.choice", side_effect=lambda choices: choices[0]):
+        with patch("waifuboard.proxy.random.choice", side_effect=lambda choices: choices[0]):
             with self.assertLogs("WaifuBoard", level="DEBUG"):
                 await booru.get("https://example.test/a.json")
                 await booru.get("https://example.test/b.json")
@@ -405,6 +483,47 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
             any("All proxies are cooling down" in record for record in records.output)
         )
         self.assertEqual(client.request_count, 3)
+
+    async def test_single_proxy_waits_for_cooldown_before_reuse(self):
+        now = [0.0]
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+            max_attempt_number=1,
+            proxies="http://proxy.test:8080",
+            proxy_cooldown_threshold=1,
+            proxy_cooldown_seconds=60,
+        )
+        booru._proxy_cooldown = ProxyCooldownTracker(
+            threshold=1,
+            cooldown_seconds=60,
+            clock=lambda: now[0],
+        )
+        client = CapturingClient(
+            [
+                DummyResponse(429, "Too Many Requests"),
+                DummyResponse(200, "OK"),
+            ]
+        )
+        booru.client = client
+
+        await booru.get("https://example.test/rate-limited.json")
+
+        async def advance_clock(seconds):
+            now[0] += seconds
+
+        with patch("waifuboard.proxy.asyncio.sleep", side_effect=advance_clock) as sleep:
+            with self.assertLogs("WaifuBoard", level="WARNING") as records:
+                response = await booru.get("https://example.test/recovered.json")
+
+        self.assertEqual(response.status_code, 200)
+        sleep.assert_awaited_once_with(60.0)
+        self.assertTrue(any("is cooling down" in record for record in records.output))
+        self.assertEqual(
+            client.request_history[1]["proxies"],
+            {"http": "http://proxy.test:8080", "https": "http://proxy.test:8080"},
+        )
 
     async def test_params_accept_numeric_values_and_json_dict_values(self):
         booru = Booru(

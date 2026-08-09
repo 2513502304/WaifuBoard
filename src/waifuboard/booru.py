@@ -5,7 +5,6 @@ Booru Image Board API implementation.
 import asyncio
 import logging
 import os
-import random
 import time
 from http.cookiejar import CookieJar
 from typing import (
@@ -88,7 +87,7 @@ from .observability import (
     get_body_size,
     before_sleep_log,
 )
-from .proxy import ProxyCooldownTracker, normalize_proxy, resolve_proxy
+from .proxy import ProxyCooldownTracker, ProxySelection, ProxySelector
 from .utils import normalize_filepath
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
@@ -96,8 +95,15 @@ from .utils import normalize_filepath
 # Reference: https://github.com/jawah/niquests/pull/399
 BodyFormValueType: TypeAlias = str | bytes | int | float | bool | None
 BodyFormType: TypeAlias = (
-    list[tuple[str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]]]
-    | dict[str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]]
+    list[
+        tuple[
+            str,
+            BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...],
+        ]
+    ]
+    | dict[
+        str, BodyFormValueType | list[BodyFormValueType] | tuple[BodyFormValueType, ...]
+    ]
 )
 BodyType: TypeAlias = (
     str
@@ -166,7 +172,9 @@ class Booru:
         max_attempt_number: int | None = 3,
         proxy_cooldown_threshold: int | None = None,
         proxy_cooldown_seconds: int | float = 600,
-        proxy_cooldown_statuses: Collection[int] | None = DEFAULT_PROXY_COOLDOWN_STATUSES,
+        proxy_cooldown_statuses: (
+            Collection[int] | None
+        ) = DEFAULT_PROXY_COOLDOWN_STATUSES,
         rate_limit: int | float | None = 10.0,
         timeout: TimeoutType | None = None,
         multiplexed: bool = True,
@@ -203,7 +211,7 @@ class Booru:
             params (QueryParameterType, optional): Mapping of querystring data to attach to each Request <Request>. Values may be strings, bytes, numbers, booleans, None, or lists/tuples of those scalar values for multivalued query parameters. Numeric and boolean scalar values are encoded by niquests as strings; nested dict values are compactly JSON-serialized by WaifuBoard before the request is prepared. Defaults to None.
             cookies (CookiesType, optional): A CookieJar containing all currently outstanding cookies set on this session. By default it is a RequestsCookieJar <requests.cookies.RequestsCookieJar>, but may be any other cookielib.CookieJar compatible object. Defaults to None.
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Default authentication tuple or object to attach to every request emitted. Defaults to None.
-            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. It can also be a tuple of such values; an element will be randomly selected per request. When not provided and trust_env is True, the process environment's proxy settings are captured as the default, giving an effective priority of request > session > env. Defaults to None.
+            proxies (ProxiesType, optional): Dictionary mapping protocol or protocol and host to the URL of the proxy (e.g. {'http': 'foo.bar:3128', 'http://host.name': 'foo.bar:4012'}) to be used on each Request <Request>. If a single string is provided, it will be used for both http and https. A tuple acts as a proxy pool: each outer attempt uses an available candidate that has not yet been tried by the current request, cycling only after all available candidates have been used. When not provided and trust_env is True, the process environment's proxy settings are captured as the default, giving an effective priority of request > session > env. Defaults to None.
             trust_env (bool, optional): Trust environment settings for proxy configuration, default authentication and similar. Defaults to True.
             max_redirects (int, optional): Maximum number of redirects allowed. If the request exceeds this limit, a TooManyRedirects exception is raised. This defaults to requests.models.DEFAULT_REDIRECT_LIMIT, which is 30. Defaults to 30.
             retries (RetryType, optional): Configure a number of times a request must be automatically retried before giving up. Defaults to 3.
@@ -389,6 +397,30 @@ class Booru:
         self.client.base_url = url
         logger.info(f"{self.__class__.__name__} base url set to: {url}")
 
+    def _record_proxy_outcome(
+        self,
+        selection: ProxySelection,
+        *,
+        failed: bool,
+    ) -> None:
+        """Record one proxy outcome and log when it starts a cooldown window.
+
+        Args:
+            selection (ProxySelection): Proxy metadata associated with the completed attempt.
+            failed (bool): Whether the attempt counts as a proxy-health failure.
+
+        Returns:
+            None: The shared cooldown tracker and logger are updated in place.
+        """
+        # selection.key 保留凭据用于区分代理身份，selection.log 只用于日志；任何日志调用都不能使用未脱敏 key
+        cooled_down = self._proxy_cooldown.record(selection.key, failed=failed)
+        if cooled_down:
+            logger.warning(
+                f"proxy.cooldown proxy={selection.log} "
+                f"failures={self._proxy_cooldown.threshold} "
+                f"cooldown={format_elapsed(self._proxy_cooldown.cooldown_seconds)}"
+            )
+
     async def request(
         self,
         method: str,
@@ -427,9 +459,9 @@ class Booru:
             auth (HttpAuthenticationType | AsyncHttpAuthenticationType, optional): Auth tuple or callable to enable Basic/Digest/Custom HTTP Auth. Defaults to None.
             timeout (TimeoutType, optional): How long to wait for the server to send data before giving up, as a float, or a :ref:(connect timeout, read timeout) <timeouts> tuple. Defaults to None.
             allow_redirects (bool, optional): Set to True by default. Defaults to True.
-            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. It can also be a tuple containing the above two types. If the effective value is a tuple, whether inherited from the Booru instance or explicitly passed on this request, one available candidate is selected after skipping candidates that are cooling down. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
-            max_attempt_number (int, optional): Maximum number of attempts to make. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
-            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states after niquests transport retry has returned. This does not override niquests' inner Retry status_forcelist. Defaults to None.
+            proxies (ProxiesType, UnsetType, optional): Dictionary mapping protocol or protocol and hostname to the URL of the proxy. If a single string is provided, it will be used for both http and https. A tuple acts as a proxy pool: each outer attempt skips cooling candidates and prefers one not yet tried by the current request. A selected string proxy is normalized to the dict shape required by niquests. If left as UNSET, falls back to the proxies configured on the Booru instance. Pass None to explicitly bypass any proxy for this request. Defaults to UNSET.
+            max_attempt_number (int, optional): Maximum number of outer tenacity attempts. Each outer attempt starts only after the current niquests retry sequence returns an unexpected HTTP error response or raises an exception, and a proxy pool is reselected between attempts. If None, falls back to the Booru instance's max_attempt_number; if that is also None, a single attempt is made. Defaults to None.
+            expected_statuses (Collection[int], optional): HTTP statuses that should be returned as expected business states without triggering an outer status retry or proxy failure. This does not override niquests' inner Retry status_forcelist. Defaults to None.
             hooks (AsyncHookType[PreparedRequest | Response], optional): Dictionary mapping hook name to one event or list of events, event must be callable. Defaults to None.
             stream (bool, optional): Whether to immediately download the response content. Defaults to False. Defaults to None.
             verify (TLSVerifyType, optional): Either a boolean, in which case it controls whether we verify the server's TLS certificate, or a path passed as a string or os.Pathlike object, in which case it must be a path to a CA bundle to use. Defaults to True. When set to False, requests will accept any TLS certificate presented by the server, and will ignore hostname mismatches and/or expired certificates, which will make your application vulnerable to man-in-the-middle (MitM) attacks. Setting verify to False may be useful during local development or testing. It is also possible to put the certificates (directly) in a string or bytes. Defaults to None.
@@ -455,87 +487,29 @@ class Booru:
         if params is None:
             params = {}
         else:
-            params = (
-                parse_qs(parsed_url.query) | dict(params)
+            params = parse_qs(parsed_url.query) | dict(
+                params
             )  # 获取 URL 中的请求参数，并将其与 params 参数合并
         #!requests/httpx 无法*正确处理* dict 类型的请求参数，需要将其转换为 JSON 字符串
         for key, value in params.items():
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        async def select_request_proxies(
-            value: ProxiesType | None | UnsetType,
-        ) -> tuple[dict[str, str], str | None, str | None]:
-            """Select request-level proxies and return niquests proxies plus tracking metadata."""
-            # UNSET: 未传入，继承 Booru 实例配置；若实例配置是 tuple，同样会走下方
-            #        tuple 候选流程，跳过 cooldown 中的代理后再现挑一个。
-            # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
-            # 其他 : 显式覆盖；若是 tuple，也会跳过正在 cooldown 的 proxy 后再现挑。
-            if isinstance(value, UnsetType):
-                value = self._proxies or {}
-            elif value is None:
-                value = {"no_proxy": "*"}
+        # UNSET 继承实例代理；None 注入 no_proxy="*" 显式压过环境代理，并规避 niquests 对空代理 URL 的 KeyError
+        if isinstance(proxies, UnsetType):
+            effective_proxies = self._proxies or {}
+        elif proxies is None:
+            effective_proxies = {"no_proxy": "*"}
+        else:
+            effective_proxies = proxies
 
-            if isinstance(value, tuple):
-                # tuple 中的候选可以是 str 或 dict；每个候选只做一次 normalize + resolve，
-                # 同时得到 raw key 与 redacted log，避免 key/log 两条路径重复 select_proxy。
-                candidates = list(value)
-                if not candidates:
-                    return {}, None, None
-
-                def resolve_candidate(candidate: ProxyType):
-                    """Normalize and resolve one proxy candidate exactly once."""
-                    normalized = normalize_proxy(candidate)
-                    return (
-                        normalized,
-                        resolve_proxy(url, normalized, self.client.base_url),
-                    )
-
-                resolved_candidates = [
-                    resolve_candidate(candidate)
-                    for candidate in candidates
-                ]
-
-                while True:
-                    available_candidates = []
-                    cooling_down_keys = []
-                    for candidate, proxy_resolution in resolved_candidates:
-                        if self._proxy_cooldown.is_available(proxy_resolution.key):
-                            available_candidates.append((candidate, proxy_resolution))
-                        else:
-                            remaining = self._proxy_cooldown.remaining(
-                                proxy_resolution.key or ""
-                            )
-                            logger.debug(
-                                f"proxy.skip proxy={proxy_resolution.log} reason=cooldown "
-                                f"remaining={format_elapsed(remaining)}"
-                            )
-                            if proxy_resolution.key is not None:
-                                cooling_down_keys.append(proxy_resolution.key)
-
-                    if available_candidates:
-                        selected, proxy_resolution = random.choice(available_candidates)
-                        return selected, proxy_resolution.key, proxy_resolution.log
-
-                    wait_seconds = self._proxy_cooldown.next_available_in(cooling_down_keys)
-                    logger.warning(
-                        "All proxies are cooling down; waiting "
-                        f"{format_elapsed(wait_seconds)} before retrying proxy selection."
-                    )
-                    await asyncio.sleep(wait_seconds)
-
-            # 单个 str/dict 没有可替代候选；仍然先归一化，再按 raw key 等待 cooldown 结束。
-            selected = normalize_proxy(cast(dict[str, str] | str, value))
-            proxy_resolution = resolve_proxy(url, selected, self.client.base_url)
-            while not self._proxy_cooldown.is_available(proxy_resolution.key):
-                remaining = self._proxy_cooldown.remaining(proxy_resolution.key or "")
-                logger.warning(
-                    f"Proxy {proxy_resolution.log} is cooling down; waiting "
-                    f"{format_elapsed(remaining)} before retrying proxy selection."
-                )
-                await asyncio.sleep(remaining)
-
-            return selected, proxy_resolution.key, proxy_resolution.log
+        # selector 在每个 Booru.request 只创建一次，因此代理池的 normalize、select_proxy 与凭据脱敏不会在每轮 tenacity attempt 重复执行
+        proxy_selector = ProxySelector(
+            url=url,
+            proxies=effective_proxies,
+            tracker=self._proxy_cooldown,
+            base_url=self.client.base_url,
+        )
 
         # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
         if max_attempt_number is None:
@@ -547,31 +521,27 @@ class Booru:
         # 有些站点会把业务状态编码到非 2xx/429 状态码里；命中时不触发 Booru 外层 status retry。
         expected_status_codes = set(expected_statuses or ())
 
-        proxy_key: str | None = None
-        proxy_log: str | None = None
-
-        def record_proxy_outcome(*, failed: bool) -> None:
-            """Record the selected proxy outcome and emit a cooldown warning when needed."""
-            # proxy_key 是未脱敏的内部身份，proxy_log 是脱敏后的日志值；两者不能混用。
-            cooled_down = self._proxy_cooldown.record(proxy_key, failed=failed)
-            if cooled_down:
-                logger.warning(
-                    f"proxy.cooldown proxy={proxy_log} "
-                    f"failures={self._proxy_cooldown.threshold} "
-                    f"cooldown={format_elapsed(self._proxy_cooldown.cooldown_seconds)}"
-                )
+        proxy_selection = ProxySelection(proxies={}, key=None, log=None)
 
         def format_request_retry_log(retry_state) -> str:
-            """Format the outer tenacity retry log with request and proxy context."""
+            """Format the outer tenacity retry log with request and proxy context.
+
+            Args:
+                retry_state (RetryCallState): Tenacity state for the failed attempt and upcoming sleep.
+
+            Returns:
+                str: Retry message containing request, proxy, progress, sleep, and failure context.
+            """
             if retry_state.outcome is None:
-                raise RuntimeError("format_request_retry_log() called before outcome was set")
+                raise RuntimeError(
+                    "format_request_retry_log() called before outcome was set"
+                )
             if retry_state.next_action is None:
                 raise RuntimeError(
                     "format_request_retry_log() called before next_action was set"
                 )
 
-            # before_sleep 既可能收到异常，也可能收到 retry predicate 触发的返回值。
-            # 当前 Booru 外层 retry 只配置 exception retry，但这里保留上游 before_sleep_log 的完整分支。
+            # before_sleep 既可能收到异常，也可能收到 retry predicate 触发的返回值；当前实现通过 raise_for_status 把 unexpected HTTP status 转为异常，但仍保留上游完整分支以免未来 predicate 改为 result-based 后日志失真
             if retry_state.outcome.failed:
                 exc = retry_state.outcome.exception()
                 reason = f"{exc.__class__.__name__}: {exc}"
@@ -581,15 +551,15 @@ class Booru:
             return format_retry_log(
                 method=method,
                 url=url,
-                proxy_log=proxy_log,
+                proxy_log=proxy_selection.log,
                 next_attempt=retry_state.attempt_number + 1,
                 max_attempt_number=max_attempt_number,
                 sleep_seconds=retry_state.next_action.sleep,
                 reason=reason,
             )
 
-        # niquests 的 Retry 仍然负责 HTTP/transport-level retry。外层 tenacity 只兜底旧版 niquests
-        # 可能抛出的 Python-level exception，避免这些异常直接打断批量请求流程。
+        # niquests 内层 Retry 先在当前选中代理上处理 status_forcelist 与 transport retry；只有它返回 unexpected error response 或最终抛出 Python exception 后，tenacity 外层才开始下一次 attempt 并让 selector 换代理
+        # 保留双层 retry 是兼容旧版 niquests Python-level 异常的兜底机制，同时恢复 main 中“非最后一次外层 attempt 对 HTTP error 调用 raise_for_status”的契约
         async for attempt in AsyncRetrying(
             sleep=asyncio.sleep,
             stop=stop_after_attempt(max_attempt_number),
@@ -605,8 +575,10 @@ class Booru:
             reraise=True,
         ):
             with attempt:
-                selected_proxies, proxy_key, proxy_log = await select_request_proxies(proxies)
-                start_time = time.perf_counter()
+                # 每轮外层 attempt 重新选择代理；代理池 selector 会优先选择本次 request 尚未尝试过且不在 cooldown 的候选
+                proxy_selection = await proxy_selector.select()
+                should_log_response = logger.isEnabledFor(logging.INFO)
+                start_time = time.perf_counter() if should_log_response else None
                 try:
                     response: Response | AsyncResponse = await self.client.request(
                         method=method,
@@ -619,7 +591,7 @@ class Booru:
                         auth=auth,
                         timeout=timeout,
                         allow_redirects=allow_redirects,
-                        proxies=selected_proxies,
+                        proxies=proxy_selection.proxies,
                         hooks=hooks,
                         stream=stream,
                         verify=verify,
@@ -628,9 +600,9 @@ class Booru:
                     )
                     await self.client.gather(response)
                 except Exception:
-                    record_proxy_outcome(failed=True)
+                    # transport、adapter、gather 或 hook 抛出的异常都表示当前代理未完成请求；先记入健康状态，再交给 tenacity 决定是否还有外层预算
+                    self._record_proxy_outcome(proxy_selection, failed=True)
                     raise
-                elapsed = time.perf_counter() - start_time
 
                 status_code = getattr(response, "status_code", None)
                 is_expected_status = status_code in expected_status_codes
@@ -639,7 +611,15 @@ class Booru:
                     and status_code in self._proxy_cooldown_statuses
                     and not is_expected_status
                 )
-                record_proxy_outcome(failed=failed_status)
+                # expected_statuses 是业务成功状态，不应污染代理健康；其他状态只有显式列入 cooldown policy 才累计失败
+                self._record_proxy_outcome(proxy_selection, failed=failed_status)
+
+                # main 的既有语义是在最后一次 attempt 前对所有 unexpected 4xx/5xx 调用 raise_for_status；这覆盖 niquests status_forcelist 之外的状态，并让下一轮外层 attempt 更换代理
+                if (
+                    attempt.retry_state.attempt_number < max_attempt_number
+                    and not is_expected_status
+                ):
+                    response.raise_for_status()
 
                 # 统一为 sync Response：
                 # - await 一次 .content 把 body 读进 _content 缓存，再把 __class__ 降回 Response，调用方访问 .text / .content 就不必 await
@@ -648,32 +628,46 @@ class Booru:
                     response.__class__ = Response
 
                 response: Response = cast(Response, response)
-                content = getattr(response, "_content", None)
-                if content is None:
-                    content = getattr(response, "content", None)
-                body_size = get_body_size(content)
-                redirects = len(getattr(response, "history", []) or [])
 
-                logger.info(
-                    " ".join(
-                        [
-                            f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
-                            f"via {proxy_log}" if proxy_log else "",
-                            format_response_metrics(
-                                attempt_number=attempt.retry_state.attempt_number,
-                                max_attempt_number=max_attempt_number,
-                                elapsed=elapsed,
-                                body_size=body_size,
-                                redirects=redirects,
-                                expected_statuses=(
-                                    expected_status_codes if is_expected_status else None
+                # INFO 被关闭时跳过 repr、history、body size 与格式化，避免批量下载在热路径为不可见日志支付额外成本
+                if should_log_response:
+                    assert start_time is not None
+                    content = getattr(response, "_content", None)
+                    if content is None:
+                        content = getattr(response, "content", None)
+                    body_size = get_body_size(content)
+                    redirects = len(getattr(response, "history", []) or [])
+                    elapsed = time.perf_counter() - start_time
+
+                    logger.info(
+                        " ".join(
+                            [
+                                f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
+                                (
+                                    f"via {proxy_selection.log}"
+                                    if proxy_selection.log
+                                    else ""
                                 ),
-                            ),
-                        ]
-                    ).strip(),
-                )
+                                format_response_metrics(
+                                    attempt_number=attempt.retry_state.attempt_number,
+                                    max_attempt_number=max_attempt_number,
+                                    elapsed=elapsed,
+                                    body_size=body_size,
+                                    redirects=redirects,
+                                    expected_statuses=(
+                                        expected_status_codes
+                                        if is_expected_status
+                                        else None
+                                    ),
+                                ),
+                            ]
+                        ).strip(),
+                    )
 
                 return response
+
+        # stop_after_attempt 与 reraise=True 理论上保证循环只能 return 或抛异常；保留显式终止用于记录该不变量并满足静态分析器
+        raise RuntimeError("request retry loop exited without a response")
 
     async def get(
         self,
