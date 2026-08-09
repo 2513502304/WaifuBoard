@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from collections.abc import Iterable
 from types import SimpleNamespace
 
 import pandas as pd
@@ -18,6 +19,22 @@ from waifuboard.sites.danbooru import (
 )
 from waifuboard.sites.moebooru import YanderePools, YanderePosts
 from waifuboard.sites.safebooru import SafebooruPosts
+from waifuboard.typing import DownloadItem, DownloadResult
+
+
+def unique_download_items(items: Iterable[DownloadItem]) -> list[DownloadItem]:
+    """Mirror Booru's first-item-wins destination deduplication in site mocks.
+
+    Args:
+        items: Download items submitted by a site component.
+
+    Returns:
+        Download items deduplicated by destination path in input order.
+    """
+    items_by_filepath: dict[str, DownloadItem] = {}
+    for item in items:
+        items_by_filepath.setdefault(item.filepath, item)
+    return list(items_by_filepath.values())
 
 
 class PaginationParserTests(unittest.TestCase):
@@ -87,7 +104,7 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
             ["tag-b", "tag-a-first"],
         )
 
-    async def test_pagination_probes_return_site_specific_fallbacks(self):
+    async def test_pagination_probes_preserve_site_specific_failure_semantics(self):
         error = RequestException(
             "unavailable",
             request=SimpleNamespace(url="https://example.test/page"),
@@ -112,9 +129,13 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(component_type=component_type):
                 self.assertEqual(await component_type(client).index_page(), 1)
 
-        self.assertEqual(await YanderePosts(client).list_gt_page(), 1)
-        self.assertEqual(await YanderePools(client).list_pools_page(), 1)
-        self.assertEqual(await SafebooruPosts(client).list_pid(), 0)
+        # HTML 分页探测失败时，Yandere 与 Safebooru 无法区分“只有首屏”和“最大页未知”；抛出请求错误可避免 all_page 静默截断数据
+        with self.assertRaises(RequestException):
+            await YanderePosts(client).list_gt_page()
+        with self.assertRaises(RequestException):
+            await YanderePools(client).list_pools_page()
+        with self.assertRaises(RequestException):
+            await SafebooruPosts(client).list_pid()
 
     async def test_yandere_tail_pagination_stops_on_repeated_non_empty_page(self):
         class PaginationClient:
@@ -178,11 +199,19 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
                 self.saved_raw_ids = []
                 self.saved_tags = []
 
-            async def concurrent_download_file(self, urls, *args, **kwargs):
-                self.download_urls = list(urls)
-                yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
+            async def concurrent_download_file(self, items, *args, **kwargs):
+                items = unique_download_items(items)
+                self.download_urls = [item.url for item in items]
+                items_by_url = {item.url: item for item in items}
+                yield DownloadResult(
+                    item=items_by_url["https://example.test/b.jpg"],
+                    filepath=f"{self.directory}/b.jpg",
+                )
                 yield None
-                yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
+                yield DownloadResult(
+                    item=items_by_url["https://example.test/a.jpg"],
+                    filepath=f"{self.directory}/a-1.jpg",
+                )
 
             async def save_raws(self, raws, **kwargs):
                 self.saved_raw_ids.append(raws.iloc[0]["id"])
@@ -215,11 +244,19 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
                 self.saved_raw_ids = []
                 self.saved_tags = []
 
-            async def concurrent_download_file(self, urls, *args, **kwargs):
-                self.download_urls = list(urls)
-                yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
+            async def concurrent_download_file(self, items, *args, **kwargs):
+                items = unique_download_items(items)
+                self.download_urls = [item.url for item in items]
+                items_by_url = {item.url: item for item in items}
+                yield DownloadResult(
+                    item=items_by_url["https://example.test/b.jpg"],
+                    filepath=f"{self.directory}/b.jpg",
+                )
                 yield None
-                yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
+                yield DownloadResult(
+                    item=items_by_url["https://example.test/a.jpg"],
+                    filepath=f"{self.directory}/a-1.jpg",
+                )
 
             async def save_raws(self, raws, **kwargs):
                 self.saved_raw_ids.append(raws.iloc[0]["id"])
@@ -256,11 +293,19 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
                 self.saved_raw_ids = []
                 self.saved_tags = []
 
-            async def concurrent_download_file(self, urls, *args, **kwargs):
-                self.download_urls = list(urls)
-                yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
+            async def concurrent_download_file(self, items, *args, **kwargs):
+                items = unique_download_items(items)
+                self.download_urls = [item.url for item in items]
+                items_by_url = {item.url: item for item in items}
+                yield DownloadResult(
+                    item=items_by_url["https://example.test/b.jpg"],
+                    filepath=f"{self.directory}/b.jpg",
+                )
                 yield None
-                yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
+                yield DownloadResult(
+                    item=items_by_url["https://example.test/a.jpg"],
+                    filepath=f"{self.directory}/a-1.jpg",
+                )
 
             async def save_raws(self, raws, **kwargs):
                 self.saved_raw_ids.append(raws.iloc[0]["id"])

@@ -127,8 +127,8 @@ class SafebooruPosts(SafebooruComponent):
             )
         except RequestException as exc:
             logger.error(format_request_error(exc))
-            # pid 从 0 开始；探测失败时返回最小有效值，让 all_page 仍能请求首批结果并保持 -> int 契约
-            return 0
+            # 最大 pid 未知时不能伪装成只有一页，否则 all_page 会静默截断；让请求错误向上传播，由调用方决定何时恢复扫描
+            raise
 
     async def list(
         self,
@@ -277,7 +277,7 @@ class SafebooruPosts(SafebooruComponent):
                 end_page=max_page - 1,
                 page_key="pid",
             ):
-                yield res
+                yield res.content if res is not None else None
 
             # 获取忽略后的帖子
             if ignored_posts:
@@ -291,7 +291,7 @@ class SafebooruPosts(SafebooruComponent):
                     end_page=max_page,
                     page_key="pid",
                 ):
-                    yield res
+                    yield res.content if res is not None else None
 
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
@@ -319,7 +319,7 @@ class SafebooruPosts(SafebooruComponent):
                 end_page=end_page,
                 page_key="pid",
             ):
-                yield res
+                yield res.content if res is not None else None
 
     def deleted_image(self):
         # TODO
@@ -357,7 +357,7 @@ class SafebooruPosts(SafebooruComponent):
         async for i, posts in aenumerate(
             self.list(
                 limit=limit,
-                # list() 直接暴露 Safebooru 从 0 开始的 pid；download() 保留从 1 开始的用户页码，并在调用边界转换一次，避免默认下载产生 pid=-1 或跳过首批结果
+                # list() 直接暴露 Safebooru 从 0 开始的 pid；download() 保留从 1 开始的用户页码，并在调用边界转换一次，避免默认下载跳过首个 pid 或产生 pid=-1
                 start_page=start_page - 1,
                 end_page=end_page - 1,
                 all_page=all_page,
@@ -366,23 +366,16 @@ class SafebooruPosts(SafebooruComponent):
                 id=id,
             )
         ):
+            if posts is None:
+                # None 表示页面请求失败；不要把它转换成空 DataFrame 后误报为业务上的空帖子页
+                logger.error(f"Failed to fetch posts page {i + 1}.")
+                continue
             posts = pd.DataFrame(posts)
 
             if posts.empty:
                 logger.info(f"All of the posts {i + 1} are empty.")
                 continue
 
-            # 同一个 URL 会写入同一个目标文件，重复提交会产生并发写冲突；下载 helper 成功时只返回 (url, filepath)、失败时返回 None，因此也无法用重复结果可靠关联多条源记录，按输入顺序保留首条非空 URL
-            download_posts = posts.dropna(subset=["file_url"]).drop_duplicates(
-                subset=["file_url"], keep="first"
-            )
-            urls = download_posts["file_url"]  # 帖子 URLs
-            if save_raws or save_tags:
-                # 下载 helper 按完成顺序返回结果，并会省略失败或已有文件对应的 URL，因此不能用结果序号反推源行；仅在需要 sidecar 时建立 URL 到首条源记录的直接映射
-                source_indices_by_url = {
-                    file_url: source_index
-                    for source_index, file_url in urls.items()
-                }
             if id is not None:  # 存储文件目录
                 posts_directory = os.path.join(self.directory, f"{id}")  # 帖子文件目录
                 images_directory = os.path.join(
@@ -396,25 +389,28 @@ class SafebooruPosts(SafebooruComponent):
                     posts_directory, "images"
                 )  # 图像文件目录
 
-            success_count, failure_count = 0, 0
-            async for res in self.client.concurrent_download_file(
-                urls,
+            # 构造下载任务
+            download_items = self.build_download_items(
+                posts,
                 images_directory,
-            ):
+                tag_column="tags",
+                include_raw=save_raws,
+                include_tags=save_tags,
+            )
+
+            success_count, failure_count = 0, 0
+            async for res in self.client.concurrent_download_file(download_items):
                 if res is None:
                     failure_count += 1
                     continue
                 else:
                     success_count += 1
 
-                url, filepath = res
-                if save_raws or save_tags:
-                    source_index = source_indices_by_url[url]
+                item = res.item
+                filepath = res.filepath
 
                 # 保存帖子 api 响应的元数据（json 格式）
-                if save_raws:
-                    # 保存元数据
-                    post_raws = posts.loc[[source_index]]  # 筛选后的元数据
+                if save_raws and item.raw is not None:
                     raws_directory = os.path.join(
                         posts_directory, "raws"
                     )  # 元数据文件目录
@@ -422,16 +418,14 @@ class SafebooruPosts(SafebooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".json"
                     )  # 元数据文件名
                     await self.client.save_raws(
-                        post_raws,
+                        item.raw,
                         directory=raws_directory,
                         filename=raws_filename,
                         overwrite=overwrite,
                     )
 
                 # 保存标签
-                if save_tags:
-                    # 帖子标签
-                    post_tags = posts.at[source_index, "tags"]  # 筛选后的 tags
+                if save_tags and item.tags is not None:
                     tags_directory = os.path.join(
                         posts_directory, "tags"
                     )  # 标签文件目录
@@ -439,12 +433,11 @@ class SafebooruPosts(SafebooruComponent):
                         os.path.splitext(os.path.basename(filepath))[0] + ".txt"
                     )  # 标签文件名
                     await self.client.save_tags(
-                        post_tags,
+                        item.tags,
                         directory=tags_directory,
                         filename=tags_filename,
                         overwrite=overwrite,
                     )
-
             logger.info(
                 f"Downloaded {success_count} successful, {failure_count} failed for posts: {posts['id'].tolist()}"
             )
