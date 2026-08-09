@@ -133,6 +133,23 @@ def get_body_size(content: object) -> int | None:
     return None
 
 
+def format_request_error(error: BaseException) -> str:
+    """Format a request error even when no prepared request is attached.
+
+    Args:
+        error (BaseException): Request or transport exception to describe.
+
+    Returns:
+        str: Error class, best-effort request URL, and exception message.
+    """
+    # DNS、adapter 初始化或测试 double 可能在 PreparedRequest 建立前失败，此时 exception.request 合法地为 None，日志不能再触发二次 AttributeError
+    request_url = getattr(getattr(error, "request", None), "url", "<unknown>")
+    # URL 与异常正文都可能包含服务端或用户可控文本；转义换行可保留原始信息，同时阻止单个异常伪造额外日志行
+    safe_request_url = str(request_url).replace("\r", "\\r").replace("\n", "\\n")
+    safe_error = str(error).replace("\r", "\\r").replace("\n", "\\n")
+    return f"{error.__class__.__name__} for {safe_request_url} - {safe_error}"
+
+
 def format_retry_log(
     *,
     method: str,

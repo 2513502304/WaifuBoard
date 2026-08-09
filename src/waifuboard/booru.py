@@ -79,21 +79,19 @@ from tenacity.wait import wait_exponential_jitter
 from urllib3.util.retry import Retry
 from urllib3.util.timeout import Timeout
 
-from .observability import (
+from .utils import (
+    ProxyCooldownTracker,
+    ProxySelection,
     logger,
     format_response_metrics,
     format_retry_log,
     format_elapsed,
     get_body_size,
     before_sleep_log,
-)
-from .proxy import (
-    ProxyCooldownTracker,
-    ProxySelection,
+    normalize_filepath,
     prepare_proxy_pool,
     resolve_outcome_proxy,
 )
-from .paths import normalize_filepath
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
 # values; keep WaifuBoard's wrapper types explicit when we rely on that behavior.

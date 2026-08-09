@@ -7,7 +7,7 @@ from niquests.exceptions import HTTPError
 from niquests.exceptions import RequestException
 
 from waifuboard.booru import Booru, BodyFormValueType, QueryParameterScalarType
-from waifuboard.observability import format_bytes
+from waifuboard.observability import format_bytes, format_request_error
 from waifuboard.proxy import (
     ProxyCooldownTracker,
     format_proxy_key,
@@ -404,6 +404,23 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(format_bytes(512), "512 B")
         self.assertEqual(format_bytes(1536), "1.5 KB")
         self.assertEqual(format_bytes(2 * 1024 * 1024), "2.0 MB")
+
+    def test_request_error_log_handles_missing_prepared_request(self):
+        self.assertEqual(
+            format_request_error(RequestException("dns failed")),
+            "RequestException for <unknown> - dns failed",
+        )
+
+    def test_request_error_log_escapes_line_breaks(self):
+        error = RequestException(
+            "first line\nforged line",
+            request=DummyRequest(url="https://example.test/a\r\nforged"),
+        )
+
+        self.assertEqual(
+            format_request_error(error),
+            "RequestException for https://example.test/a\\r\\nforged - first line\\nforged line",
+        )
 
     def test_format_proxy_key_keeps_credentials_separate(self):
         self.assertEqual(
