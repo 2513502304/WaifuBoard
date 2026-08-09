@@ -680,6 +680,10 @@ class DanbooruPosts(DanbooruComponent):
                 md5=md5,
             )
         ):
+            if posts is None:
+                # None 表示页面请求失败；不要把它转换成空 DataFrame 后误报为业务上的空帖子页
+                logger.error(f"Failed to fetch posts page {i + 1}.")
+                continue
             posts = pd.DataFrame(posts)
 
             if posts.empty:
@@ -705,6 +709,8 @@ class DanbooruPosts(DanbooruComponent):
                 images_directory,
                 tag_column="tag_string",
                 referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/posts/{post['id']}",
+                include_raw=save_raws,
+                include_tags=save_tags,
             )
 
             success_count, failure_count = 0, 0
@@ -1069,7 +1075,7 @@ class DanbooruTags(DanbooruComponent):
         params = {}
 
         # 结果列表
-        result: list[dict] = (
+        result: list[dict] | None = (
             await self.client.fetch_page(  # danbooru 在搜索 id 时，返回的结果列表仅包含一个图集
                 url,
                 headers=headers,
@@ -1117,6 +1123,10 @@ class DanbooruTags(DanbooruComponent):
                 all_page=all_page,
             )
         ):
+            if tags is None:
+                # None 表示页面请求失败；不要把它转换成空 DataFrame 后误报为业务上的空标签页
+                logger.error(f"Failed to fetch tags page {i + 1}.")
+                continue
             tags = pd.DataFrame(tags)
             if tags.empty:
                 logger.info(f"All of the tags {i + 1} are empty.")
@@ -1519,6 +1529,10 @@ class DanbooruArtists(DanbooruComponent):
                 all_page=all_page,
             )
         ):
+            if artists is None:
+                # None 表示页面请求失败；不要把它转换成空 DataFrame 后误报为业务上的空艺术家页
+                logger.error(f"Failed to fetch artists page {i + 1}.")
+                continue
             artists = pd.DataFrame(artists)
             if artists.empty:
                 logger.info(f"All of the artists {i + 1} are empty.")
@@ -1938,6 +1952,10 @@ class DanbooruWikiPages(DanbooruComponent):
                 all_page=all_page,
             )
         ):
+            if wikis is None:
+                # None 表示页面请求失败；不要把它转换成空 DataFrame 后误报为业务上的空 wiki 页
+                logger.error(f"Failed to fetch wikis page {i + 1}.")
+                continue
             wikis = pd.DataFrame(wikis)
             if wikis.empty:
                 logger.info(f"All of the wikis {i + 1} are empty.")
@@ -2406,6 +2424,10 @@ class DanbooruPools(DanbooruComponent):
                 all_page=all_page,
             )
         ):
+            if pools is None:
+                # None 表示图集列表请求失败；跳过该批次时明确记录缺失，避免后续把失败结果当作空图集处理
+                logger.error(f"Failed to fetch pools page {i + 1}.")
+                continue
             pools = pd.DataFrame(pools)
 
             # 过滤空图集
@@ -2436,6 +2458,12 @@ class DanbooruPools(DanbooruComponent):
                 task_results: list[list[dict] | None] = (
                     await self.client.batch_process_tasks(tasks)
                 )
+                failed_posts = sum(res is None for res in task_results)
+                if failed_posts > 0:
+                    # show() 的 None 表示请求失败而不是合法空结果；保留已成功的帖子，同时明确记录图集存在缺失，避免把部分抓取误认为完整图集
+                    logger.error(
+                        f"Failed to fetch {failed_posts} posts for pool: {name}"
+                    )
                 # 合并所有帖子
                 posts = pd.DataFrame(
                     [post for res in task_results if res is not None for post in res]
@@ -2454,6 +2482,8 @@ class DanbooruPools(DanbooruComponent):
                     images_directory,
                     tag_column="tag_string",
                     referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/posts/{post['id']}",
+                    include_raw=save_raws,
+                    include_tags=save_tags,
                 )
 
                 success_count, failure_count = 0, 0

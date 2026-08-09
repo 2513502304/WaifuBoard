@@ -2,9 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
-from niquests.exceptions import RequestException
+from niquests.exceptions import HTTPError, JSONDecodeError, RequestException
 
 from waifuboard.booru import Booru
 from waifuboard.danbooru import DanbooruPools, DanbooruPosts
@@ -91,6 +92,85 @@ class ReversingDownloadClient(FakeDownloadClient):
 
 
 class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_preserves_final_http_error_response_for_callers(self):
+        request = SimpleNamespace(
+            method="GET",
+            url="https://example.test/missing",
+        )
+
+        class ErrorResponse:
+            reason = "Not Found"
+
+            def __init__(self):
+                self.request = request
+
+            def raise_for_status(self):
+                raise HTTPError("404 Client Error", request=request, response=self)
+
+            def __repr__(self):
+                return "<Response [404]>"
+
+        class ErrorClient:
+            base_url = None
+
+            async def request(self, **kwargs):
+                return ErrorResponse()
+
+            async def gather(self, response):
+                return None
+
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        booru.client = ErrorClient()
+
+        response = await booru.get(request.url)
+
+        self.assertEqual(response.reason, "Not Found")
+
+    async def test_download_file_rejects_final_http_error_response(self):
+        request = SimpleNamespace(
+            method="GET",
+            url="https://cdn.example.test/image.jpg",
+        )
+
+        class ErrorResponse:
+            reason = "Service Unavailable"
+            content = b"maintenance"
+
+            def __init__(self):
+                self.request = request
+
+            def raise_for_status(self):
+                raise HTTPError("503 Server Error", request=request, response=self)
+
+            def __repr__(self):
+                return "<Response [503]>"
+
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+
+        async def fake_get(*args, **kwargs):
+            return ErrorResponse()
+
+        booru.get = fake_get
+
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = Path(directory) / "image.jpg"
+            result = await booru.download_file(
+                DownloadItem(url=request.url, filepath=str(filepath))
+            )
+
+            self.assertIsNone(result)
+            self.assertFalse(filepath.exists())
+
     async def test_download_file_forwards_referer(self):
         booru = Booru(
             default_headers=False,
@@ -102,7 +182,10 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_get(url, **kwargs):
             calls.append({"url": url, **kwargs})
-            return SimpleNamespace(content=b"image-bytes")
+            return SimpleNamespace(
+                content=b"image-bytes",
+                raise_for_status=lambda: None,
+            )
 
         booru.get = fake_get
 
@@ -119,6 +202,97 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(filepath.read_bytes(), b"image-bytes")
 
         self.assertEqual(calls[0]["referer"], "https://example.test/posts/1")
+
+    async def test_download_file_supports_tuple_list_headers_with_referer(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        calls = []
+
+        async def fake_get(url, **kwargs):
+            calls.append({"url": url, **kwargs})
+            return SimpleNamespace(
+                content=b"image-bytes",
+                raise_for_status=lambda: None,
+            )
+
+        booru.get = fake_get
+        headers = [("X-Download", "one")]
+
+        with tempfile.TemporaryDirectory() as directory:
+            item = DownloadItem(
+                url="https://cdn.example.test/image.jpg",
+                filepath=str(Path(directory) / "image.jpg"),
+                headers=headers,
+                referer="https://example.test/posts/1",
+            )
+            result = await booru.download_file(item)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(calls[0]["headers"], {"X-Download": "one"})
+        self.assertEqual(calls[0]["referer"], "https://example.test/posts/1")
+        self.assertEqual(headers, [("X-Download", "one")])
+
+    async def test_download_file_rejects_empty_response_without_creating_file(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+
+        async def fake_get(*args, **kwargs):
+            return SimpleNamespace(content=b"", raise_for_status=lambda: None)
+
+        booru.get = fake_get
+
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = Path(directory) / "empty.jpg"
+            item = DownloadItem(
+                url="https://cdn.example.test/empty.jpg",
+                filepath=str(filepath),
+            )
+
+            result = await booru.download_file(item)
+
+            self.assertIsNone(result)
+            self.assertFalse(filepath.exists())
+
+    async def test_download_file_removes_temporary_file_after_replace_failure(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+
+        async def fake_get(*args, **kwargs):
+            return SimpleNamespace(
+                content=b"image-bytes",
+                raise_for_status=lambda: None,
+            )
+
+        booru.get = fake_get
+
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = Path(directory) / "image.jpg"
+            item = DownloadItem(
+                url="https://cdn.example.test/image.jpg",
+                filepath=str(filepath),
+            )
+
+            with patch(
+                "waifuboard.booru.aioos.replace",
+                new=AsyncMock(side_effect=OSError("replace failed")),
+            ):
+                result = await booru.download_file(item)
+
+            self.assertIsNone(result)
+            self.assertFalse(filepath.exists())
+            self.assertEqual(list(Path(directory).glob("*.part")), [])
 
     async def test_concurrent_download_file_uses_download_items_after_filter(self):
         booru = RecordingDownloadBooru()
@@ -155,6 +329,52 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
                     "https://example.test/posts/20",
                 ),
             },
+        )
+
+    async def test_concurrent_download_file_redownloads_zero_byte_files(self):
+        booru = RecordingDownloadBooru()
+
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = Path(directory) / "empty.jpg"
+            filepath.touch()
+            item = DownloadItem(
+                url="https://cdn.example.test/empty.jpg",
+                filepath=str(filepath),
+            )
+
+            results = [
+                result
+                async for result in booru.concurrent_download_file([item])
+            ]
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual([call["url"] for call in booru.download_calls], [item.url])
+
+    async def test_concurrent_download_file_deduplicates_destination_paths(self):
+        booru = RecordingDownloadBooru()
+
+        with tempfile.TemporaryDirectory() as directory:
+            filepath = str(Path(directory) / "same.jpg")
+            items = [
+                DownloadItem(
+                    url="https://cdn.example.test/first.jpg",
+                    filepath=filepath,
+                ),
+                DownloadItem(
+                    url="https://cdn.example.test/second.jpg",
+                    filepath=filepath,
+                ),
+            ]
+
+            results = [
+                result
+                async for result in booru.concurrent_download_file(items)
+            ]
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(
+            [call["url"] for call in booru.download_calls],
+            ["https://cdn.example.test/first.jpg"],
         )
 
     async def test_concurrent_download_file_preserves_item_identity(self):
@@ -238,6 +458,89 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
             all(isinstance(result, PageResult) for result in results if result is not None)
         )
 
+    async def test_fetch_page_distinguishes_request_failure_from_empty_page(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        request = SimpleNamespace(url="https://example.test/posts.json")
+
+        async def failing_get(*args, **kwargs):
+            raise RequestException("unavailable", request=request)
+
+        booru.get = failing_get
+        failed = await booru.fetch_page(request.url)
+
+        async def empty_get(*args, **kwargs):
+            return SimpleNamespace(
+                json=lambda: [],
+                raise_for_status=lambda: None,
+            )
+
+        booru.get = empty_get
+        empty = await booru.fetch_page(request.url)
+
+        self.assertIsNone(failed)
+        self.assertEqual(empty, [])
+
+    async def test_fetch_page_retries_malformed_success_response(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=2,
+        )
+        calls = 0
+
+        class JsonResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise JSONDecodeError("empty response", "", 0)
+                return [{"id": 1}]
+
+        async def fake_get(*args, **kwargs):
+            return JsonResponse()
+
+        booru.get = fake_get
+
+        with patch("waifuboard.booru.asyncio.sleep", new=AsyncMock()):
+            content = await booru.fetch_page("https://example.test/posts.json")
+
+        self.assertEqual(content, [{"id": 1}])
+        self.assertEqual(calls, 2)
+
+    async def test_concurrent_fetch_page_preserves_failed_page_number(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level="WARNING",
+            trust_env=False,
+            max_attempt_number=1,
+        )
+
+        async def fake_fetch_page(api, *, params=None, **kwargs):
+            return None if params["page"] == 1 else []
+
+        booru.fetch_page = fake_fetch_page
+        results = [
+            result
+            async for result in booru.concurrent_fetch_page(
+                "https://example.test/posts.json",
+                start_page=1,
+                end_page=2,
+                page_key="page",
+            )
+        ]
+        results_by_page = {result.page: result.content for result in results}
+
+        self.assertEqual(results_by_page, {1: None, 2: []})
+
     def test_build_download_items_keeps_duplicate_index_raws_positional(self):
         booru = RecordingDownloadBooru()
         component = DanbooruPosts(booru)
@@ -267,6 +570,31 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.raw.iloc[0]["id"] for item in items], [1, 2])
         self.assertEqual([len(item.raw) for item in items], [1, 1])
 
+    def test_build_download_items_skips_unused_sidecar_materialization(self):
+        booru = RecordingDownloadBooru()
+        component = DanbooruPosts(booru)
+        posts = pd.DataFrame(
+            [
+                {
+                    "id": 1,
+                    "file_url": "https://cdn.example.test/1.jpg",
+                    "tag_string": "tag",
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            items = component.build_download_items(
+                posts,
+                directory,
+                tag_column="tag_string",
+                include_raw=False,
+                include_tags=False,
+            )
+
+        self.assertIsNone(items[0].raw)
+        self.assertIsNone(items[0].tags)
+
 
 class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
     async def test_danbooru_posts_download_uses_post_page_referers(self):
@@ -289,6 +617,8 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
 
         items = client.download_calls[0]["items"]
         self.assertEqual([item.referer for item in items], ["https://danbooru.donmai.us/posts/123"])
+        self.assertIsNone(items[0].raw)
+        self.assertIsNone(items[0].tags)
 
     async def test_danbooru_pools_download_uses_post_page_referers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -422,7 +752,7 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(client.download_calls, [])
 
-    async def test_pagination_probes_return_typed_fallbacks_after_request_errors(self):
+    async def test_pagination_probes_propagate_request_errors(self):
         client = SimpleNamespace(directory=".", base_url="https://example.test")
         error = RequestException(
             "unavailable",
@@ -434,9 +764,12 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
         client.get = failing_get
 
-        self.assertEqual(await YanderePosts(client).list_gt_page(), 1)
-        self.assertEqual(await YanderePools(client).list_pools_page(), 1)
-        self.assertEqual(await SafebooruPosts(client).list_pid(), 0)
+        with self.assertRaises(RequestException):
+            await YanderePosts(client).list_gt_page()
+        with self.assertRaises(RequestException):
+            await YanderePools(client).list_pools_page()
+        with self.assertRaises(RequestException):
+            await SafebooruPosts(client).list_pid()
 
     async def test_yandere_tail_pagination_stops_when_server_repeats_a_page(self):
         class PaginationClient:
@@ -444,8 +777,7 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
             base_url = "https://yande.re"
 
             async def concurrent_fetch_page(self, *args, **kwargs):
-                if False:
-                    yield None
+                yield PageResult(page=1, content=[{"id": 10}, {"id": 9}])
 
             async def fetch_page(self, *args, **kwargs):
                 return [{"id": 10}, {"id": 9}]
@@ -459,6 +791,27 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
         pages = [page async for page in posts.list(all_page=True)]
 
         self.assertEqual(pages, [[{"id": 10}, {"id": 9}]])
+
+    async def test_yandere_tail_pagination_exposes_request_failure(self):
+        class PaginationClient:
+            directory = "."
+            base_url = "https://yande.re"
+
+            async def concurrent_fetch_page(self, *args, **kwargs):
+                yield PageResult(page=1, content=[{"id": 10}])
+
+            async def fetch_page(self, *args, **kwargs):
+                return None
+
+        posts = YanderePosts(PaginationClient())
+
+        async def fixed_gt_page(**kwargs):
+            return 1
+
+        posts.list_gt_page = fixed_gt_page
+        pages = [page async for page in posts.list(all_page=True)]
+
+        self.assertEqual(pages, [[{"id": 10}], None])
 
     async def test_safebooru_default_page_maps_to_zero_based_pid(self):
         class PaginationClient:

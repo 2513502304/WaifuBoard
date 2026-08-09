@@ -131,9 +131,10 @@ class SafebooruPosts(SafebooruComponent):
             else:  # 不存在分页器，说明该页面只有一页
                 return 0
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
-            # Safebooru 的 pid 从 0 开始；探测失败时返回最小有效 pid，保持 -> int 契约并允许调用方继续尝试第一页
-            return 0
+            request_url = getattr(exc.request, "url", url)
+            logger.error(f"{exc.__class__.__name__} for {request_url} - {exc}")
+            # 最大 pid 未知时不能伪装成只有一页，否则 all_page 会静默截断；让请求错误向上传播，由调用方决定何时恢复扫描
+            raise
 
     async def list(
         self,
@@ -371,6 +372,10 @@ class SafebooruPosts(SafebooruComponent):
                 id=id,
             )
         ):
+            if posts is None:
+                # None 表示页面请求失败；不要把它转换成空 DataFrame 后误报为业务上的空帖子页
+                logger.error(f"Failed to fetch posts page {i + 1}.")
+                continue
             posts = pd.DataFrame(posts)
 
             if posts.empty:
@@ -395,6 +400,8 @@ class SafebooruPosts(SafebooruComponent):
                 posts,
                 images_directory,
                 tag_column="tags",
+                include_raw=save_raws,
+                include_tags=save_tags,
             )
 
             success_count, failure_count = 0, 0

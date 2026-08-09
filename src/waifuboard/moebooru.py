@@ -128,9 +128,10 @@ class YanderePosts(MoebooruComponent):
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
-            # 分页探测失败时使用单页下界，保持 -> int 契约并让调用方仍能尝试抓取第一页；返回 None 会在后续页码算术中触发 TypeError
-            return 1
+            request_url = getattr(exc.request, "url", url)
+            logger.error(f"{exc.__class__.__name__} for {request_url} - {exc}")
+            # 最大页未知时不能伪装成只有一页，否则 all_page 会静默截断；让请求错误向上传播，由调用方决定何时恢复扫描
+            raise
 
     async def list(
         self,
@@ -240,6 +241,7 @@ class YanderePosts(MoebooruComponent):
                 f"Maximum page number is greater than or equal to {gt_page} for {limit = }, {tags = }"
             )
 
+            previous_page_signature: bytes | None = None
             async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
@@ -247,6 +249,12 @@ class YanderePosts(MoebooruComponent):
                 end_page=gt_page,
                 page_key="page",
             ):
+                # as_completed 的返回顺序不等于页码顺序，因此只用显式 page 字段保存并发区间最后一页的签名，供顺序尾页阶段判断交界重复
+                if res is not None and res.page == gt_page and res.content:
+                    previous_page_signature = orjson.dumps(
+                        res.content,
+                        option=orjson.OPT_SORT_KEYS,
+                    )
                 yield res.content if res is not None else None
 
             #!仅适用于 posts 页面
@@ -257,30 +265,36 @@ class YanderePosts(MoebooruComponent):
 
             # 当前查询页码
             page = gt_page + 1
-            previous_page_signature: bytes | None = None
             # html 分页器可能低估受隐藏帖子影响的实际页数，因此继续逐页读取直到空页；同时检测服务端忽略过大 page 后重复返回上一页的异常行为，防止无限循环
             while True:
                 params.update({"page": page})
-                content: list[dict] = await self.client.fetch_page(
+                content: list[dict] | None = await self.client.fetch_page(
                     url,
                     params=params,
                 )
-                if content:
-                    # API 页面来自 JSON，排序 key 后序列化可得到与 dict 插入顺序无关的稳定签名；只保留上一页签名，避免抓取大量页面时累计内存
-                    page_signature = orjson.dumps(
-                        content,
-                        option=orjson.OPT_SORT_KEYS,
+                if content is None:
+                    # 请求失败已经耗尽 Booru 的重试预算；向生成器调用方暴露 None 后停止本轮扫描，避免把失败误报成合法末页或在持续故障时无限推进页码
+                    logger.error(
+                        f"Stopping pagination at page {page}: the page request failed."
                     )
-                    if page_signature == previous_page_signature:
-                        logger.warning(
-                            f"Stopping pagination at page {page}: the server repeated the previous non-empty page."
-                        )
-                        break
-                    previous_page_signature = page_signature
-                    yield content
-                    page += 1
-                else:
+                    yield None
                     break
+                if not content:
+                    break
+
+                # API 页面来自 JSON，排序 key 后序列化可得到与 dict 插入顺序无关的稳定签名；只保留上一页签名，避免抓取大量页面时累计内存
+                page_signature = orjson.dumps(
+                    content,
+                    option=orjson.OPT_SORT_KEYS,
+                )
+                if page_signature == previous_page_signature:
+                    logger.warning(
+                        f"Stopping pagination at page {page}: the server repeated the previous non-empty page."
+                    )
+                    break
+                previous_page_signature = page_signature
+                yield content
+                page += 1
 
         # 获取在起始页码与结束页码范围内，指定标签的帖子列表
         else:
@@ -347,6 +361,10 @@ class YanderePosts(MoebooruComponent):
                 tags=tags,
             )
         ):
+            if posts is None:
+                # None 表示页面请求失败；不要把它转换成空 DataFrame 后误报为业务上的空帖子页
+                logger.error(f"Failed to fetch posts page {i + 1}.")
+                continue
             posts = pd.DataFrame(posts)
 
             if posts.empty:
@@ -364,6 +382,8 @@ class YanderePosts(MoebooruComponent):
                 images_directory,
                 tag_column="tags",
                 referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/post/show/{post['id']}",
+                include_raw=save_raws,
+                include_tags=save_tags,
             )
 
             success_count, failure_count = 0, 0
@@ -624,9 +644,10 @@ class YanderePools(MoebooruComponent):
             else:  # 不存在分页器，说明该页面只有一页
                 return 1
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
-            # 与帖子分页探测保持相同的最小有效页码 fallback，避免 all_page 调用方把 None 传入页码范围计算
-            return 1
+            request_url = getattr(exc.request, "url", url)
+            logger.error(f"{exc.__class__.__name__} for {request_url} - {exc}")
+            # 最大页未知时不能伪装成只有一页，否则 all_page 会静默截断；让请求错误向上传播，由调用方决定何时恢复扫描
+            raise
 
     async def list_pools(
         self,
@@ -795,7 +816,7 @@ class YanderePools(MoebooruComponent):
         }
 
         # 结果列表
-        result: list[dict] = await self.client.fetch_page(
+        result: list[dict] | None = await self.client.fetch_page(
             url,
             params=params,
             callback=lambda x: x.get("posts", []),  # 获取帖子列表
@@ -853,6 +874,10 @@ class YanderePools(MoebooruComponent):
                 all_page=all_page,
             )
         ):
+            if pools is None:
+                # None 表示图集列表请求失败；跳过该批次时明确记录缺失，避免后续把失败结果当作空图集处理
+                logger.error(f"Failed to fetch pools page {i + 1}.")
+                continue
             pools = pd.DataFrame(pools)
 
             if pools.empty:
@@ -870,6 +895,10 @@ class YanderePools(MoebooruComponent):
                 posts = await self.list_posts(
                     id=id,
                 )
+                if posts is None:
+                    # None 表示请求失败而非空图集；单独记录失败原因，避免把未抓到的数据误报为业务上的空集合
+                    logger.error(f"Failed to fetch posts of pool {name}.")
+                    continue
                 posts = pd.DataFrame(posts)
 
                 # 空图集没有 file_url 列；在构建 DownloadItem 前提前跳过，既避免 KeyError，也避免向下载 helper 提交一个无意义的空批次
@@ -890,6 +919,8 @@ class YanderePools(MoebooruComponent):
                     images_directory,
                     tag_column="tags",
                     referer_factory=lambda post: f"{str(self.client.base_url).rstrip('/')}/post/show/{post['id']}",
+                    include_raw=save_raws,
+                    include_tags=save_tags,
                 )
 
                 success_count, failure_count = 0, 0
