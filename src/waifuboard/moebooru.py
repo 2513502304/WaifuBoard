@@ -7,6 +7,7 @@ from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd
+import orjson
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
 from lxml import etree
@@ -128,6 +129,8 @@ class YanderePosts(MoebooruComponent):
                 return 1
         except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            # 分页探测失败时使用单页下界，保持 -> int 契约并让调用方仍能尝试抓取第一页；返回 None 会在后续页码算术中触发 TypeError
+            return 1
 
     async def list(
         self,
@@ -254,7 +257,8 @@ class YanderePosts(MoebooruComponent):
 
             # 当前查询页码
             page = gt_page + 1
-            # 直到获取到空数据为止
+            previous_page_signature: bytes | None = None
+            # html 分页器可能低估受隐藏帖子影响的实际页数，因此继续逐页读取直到空页；同时检测服务端忽略过大 page 后重复返回上一页的异常行为，防止无限循环
             while True:
                 params.update({"page": page})
                 content: list[dict] = await self.client.fetch_page(
@@ -262,6 +266,17 @@ class YanderePosts(MoebooruComponent):
                     params=params,
                 )
                 if content:
+                    # API 页面来自 JSON，排序 key 后序列化可得到与 dict 插入顺序无关的稳定签名；只保留上一页签名，避免抓取大量页面时累计内存
+                    page_signature = orjson.dumps(
+                        content,
+                        option=orjson.OPT_SORT_KEYS,
+                    )
+                    if page_signature == previous_page_signature:
+                        logger.warning(
+                            f"Stopping pagination at page {page}: the server repeated the previous non-empty page."
+                        )
+                        break
+                    previous_page_signature = page_signature
                     yield content
                     page += 1
                 else:
@@ -610,6 +625,8 @@ class YanderePools(MoebooruComponent):
                 return 1
         except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            # 与帖子分页探测保持相同的最小有效页码 fallback，避免 all_page 调用方把 None 传入页码范围计算
+            return 1
 
     async def list_pools(
         self,
@@ -854,6 +871,11 @@ class YanderePools(MoebooruComponent):
                     id=id,
                 )
                 posts = pd.DataFrame(posts)
+
+                # 空图集没有 file_url 列；在构建 DownloadItem 前提前跳过，既避免 KeyError，也避免向下载 helper 提交一个无意义的空批次
+                if posts.empty:
+                    logger.info(f"Posts of pool {name} are empty.")
+                    continue
 
                 posts_directory = os.path.join(
                     self.directory, f"{name}"

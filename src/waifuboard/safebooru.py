@@ -132,6 +132,8 @@ class SafebooruPosts(SafebooruComponent):
                 return 0
         except RequestException as exc:
             logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            # Safebooru 的 pid 从 0 开始；探测失败时返回最小有效 pid，保持 -> int 契约并允许调用方继续尝试第一页
+            return 0
 
     async def list(
         self,
@@ -318,8 +320,8 @@ class SafebooruPosts(SafebooruComponent):
             async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
-                start_page=start_page - 1,
-                end_page=end_page - 1,
+                start_page=start_page,
+                end_page=end_page,
                 page_key="pid",
             ):
                 yield res.content if res is not None else None
@@ -360,8 +362,9 @@ class SafebooruPosts(SafebooruComponent):
         async for i, posts in aenumerate(
             self.list(
                 limit=limit,
-                start_page=start_page,
-                end_page=end_page,
+                # list() 直接暴露 Safebooru 从 0 开始的 pid；download() 保留从 1 开始的用户页码，并在调用边界转换一次，避免默认下载跳过首个 pid 或产生 pid=-1
+                start_page=start_page - 1,
+                end_page=end_page - 1,
                 all_page=all_page,
                 tags=tags,
                 cid=cid,

@@ -4,10 +4,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+from niquests.exceptions import RequestException
 
 from waifuboard.booru import Booru
 from waifuboard.danbooru import DanbooruPools, DanbooruPosts
 from waifuboard.moebooru import YanderePools, YanderePosts
+from waifuboard.safebooru import SafebooruPosts
 from waifuboard.typing import DownloadItem, DownloadResult, PageResult
 
 
@@ -399,6 +401,102 @@ class SiteDownloadRefererTests(unittest.IsolatedAsyncioTestCase):
             tag_by_filename,
             {"1.txt": "first_tag", "2.txt": "second_tag"},
         )
+
+
+class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_yandere_pools_download_skips_empty_post_lists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeDownloadClient(directory, "https://yande.re")
+            pools = YanderePools(client)
+
+            async def fake_list_pools(**kwargs):
+                yield [{"id": 1, "name": "empty-pool"}]
+
+            async def fake_list_posts(**kwargs):
+                return None
+
+            pools.list_pools = fake_list_pools
+            pools.list_posts = fake_list_posts
+
+            await pools.download()
+
+        self.assertEqual(client.download_calls, [])
+
+    async def test_pagination_probes_return_typed_fallbacks_after_request_errors(self):
+        client = SimpleNamespace(directory=".", base_url="https://example.test")
+        error = RequestException(
+            "unavailable",
+            request=SimpleNamespace(url="https://example.test/page"),
+        )
+
+        async def failing_get(*args, **kwargs):
+            raise error
+
+        client.get = failing_get
+
+        self.assertEqual(await YanderePosts(client).list_gt_page(), 1)
+        self.assertEqual(await YanderePools(client).list_pools_page(), 1)
+        self.assertEqual(await SafebooruPosts(client).list_pid(), 0)
+
+    async def test_yandere_tail_pagination_stops_when_server_repeats_a_page(self):
+        class PaginationClient:
+            directory = "."
+            base_url = "https://yande.re"
+
+            async def concurrent_fetch_page(self, *args, **kwargs):
+                if False:
+                    yield None
+
+            async def fetch_page(self, *args, **kwargs):
+                return [{"id": 10}, {"id": 9}]
+
+        posts = YanderePosts(PaginationClient())
+
+        async def fixed_gt_page(**kwargs):
+            return 1
+
+        posts.list_gt_page = fixed_gt_page
+        pages = [page async for page in posts.list(all_page=True)]
+
+        self.assertEqual(pages, [[{"id": 10}, {"id": 9}]])
+
+    async def test_safebooru_default_page_maps_to_zero_based_pid(self):
+        class PaginationClient:
+            directory = "."
+            base_url = "https://safebooru.org"
+            MAX_PID = 200000
+
+            def __init__(self):
+                self.calls = []
+
+            async def concurrent_fetch_page(self, *args, **kwargs):
+                self.calls.append(kwargs)
+                if False:
+                    yield None
+
+        client = PaginationClient()
+        posts = SafebooruPosts(client)
+
+        _ = [page async for page in posts.list()]
+
+        self.assertEqual(client.calls[0]["start_page"], 0)
+        self.assertEqual(client.calls[0]["end_page"], 0)
+
+    async def test_safebooru_download_converts_user_pages_to_zero_based_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeDownloadClient(directory, "https://safebooru.org")
+            posts = SafebooruPosts(client)
+            received_pages = []
+
+            async def fake_list(**kwargs):
+                received_pages.append((kwargs["start_page"], kwargs["end_page"]))
+                yield []
+
+            posts.list = fake_list
+
+            await posts.download()
+
+        self.assertEqual(received_pages, [(0, 0)])
 
 
 if __name__ == "__main__":
