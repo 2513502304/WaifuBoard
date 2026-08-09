@@ -87,7 +87,7 @@ from .observability import (
     get_body_size,
     before_sleep_log,
 )
-from .proxy import ProxyCooldownTracker, ProxySelection, ProxySelector
+from .proxy import ProxyCooldownTracker, ProxySelection, prepare_proxy_pool
 from .utils import normalize_filepath
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
@@ -343,6 +343,16 @@ class Booru:
         )
         self.client.proxies = {}
         self._proxies: ProxiesType | None = proxies
+        # 实例级代理配置通常会被每个 request 复用；初始化时建立不可变 prepared pool，避免高频请求重复 normalize 整个代理池
+        # selector 的已尝试索引不保存在 prepared pool 中，每个逻辑请求仍会创建独立状态，因此并发请求不会互相消耗代理候选
+        self._prepared_proxy_pool = prepare_proxy_pool(proxies or {})
+        # str 与 tuple[str] 不可能原地变化，可在 request 热路径直接 O(1) 复用；dict 或 tuple[dict] 仍需按内容重新取 cache，以保留调用方构造后修改 mapping 的既有行为
+        self._proxy_config_is_immutable = proxies is None or isinstance(
+            proxies, str
+        ) or (
+            isinstance(proxies, tuple)
+            and all(isinstance(candidate, str) for candidate in proxies)
+        )
         self._max_attempt_number: int | None = max_attempt_number
         self._proxy_cooldown = ProxyCooldownTracker(
             threshold=proxy_cooldown_threshold,
@@ -473,20 +483,21 @@ class Booru:
         Returns:
             Response: Response object.
         """
-        parsed_url = urlparse(url)
-
-        if headers is None:
-            headers = {}
-        if accept_encoding:
-            headers.update({"Accept-Encoding": accept_encoding})
-        if referer:
-            headers.update({"Referer": referer})
+        if accept_encoding or referer:
+            # request shortcut 需要修改 headers 时先复制，既避免污染调用方在并发请求间复用的 mapping，也避免没有 shortcut 时创建无用空 dict
+            headers = dict(headers or {})
+            if accept_encoding:
+                headers["Accept-Encoding"] = accept_encoding
+            if referer:
+                headers["Referer"] = referer
 
         #!Fix httpx issue [当 URL 包含请求参数且设置了 params 参数时，URL 中的请求参数会意外消失](https://github.com/encode/httpx/issues/3621)
         #!这里保留该操作仅为为了兼容 httpx
         if params is None:
             params = {}
         else:
+            # 只有显式 params 才需要解析 URL query；普通下载请求保留完整 URL 交给 niquests，跳过无用 urlparse
+            parsed_url = urlparse(url)
             params = parse_qs(parsed_url.query) | dict(
                 params
             )  # 获取 URL 中的请求参数，并将其与 params 参数合并
@@ -495,22 +506,24 @@ class Booru:
             if isinstance(value, dict):
                 params[key] = orjson.dumps(value).decode("utf-8")
 
-        # UNSET: 未传入，继承 Booru 实例配置；若实例配置是 tuple，同样会走下方 tuple 候选流程，跳过 cooldown 中的代理后再现挑一个
+        # UNSET: 未传入，直接复用 Booru 初始化时预构建的代理池；若实例配置是 tuple，每个 request 仍有独立 selector 跳过 cooldown 并轮换未尝试候选
         # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
-        # 其他 : 显式覆盖；若是 tuple，也会跳过正在 cooldown 的 proxy 后再现挑
+        # 其他 : 显式覆盖；根据配置内容命中有界 prepared-pool cache，若是 tuple，同样跳过正在 cooldown 的 proxy 后再现挑
         if isinstance(proxies, UnsetType):
-            effective_proxies = self._proxies or {}
+            if self._proxy_config_is_immutable:
+                prepared_proxy_pool = self._prepared_proxy_pool
+            else:
+                # 可变全局 mapping 每次按当前内容查询 LRU；未变化时只产生轻量 hash key，变化时则得到新的 prepared snapshot，避免长期使用陈旧代理
+                prepared_proxy_pool = prepare_proxy_pool(self._proxies or {})
         elif proxies is None:
             # niquests.utils 中的 select_proxy 对该值返回 None 并赋值给实际使用的 proxy，因此将会走 proxy is None 的分支，不会进入 self.proxy_manager[proxy] 筛选 proxy 的分支
-            effective_proxies = {"no_proxy": "*"}
+            prepared_proxy_pool = prepare_proxy_pool({"no_proxy": "*"})
         else:
-            effective_proxies = proxies
+            prepared_proxy_pool = prepare_proxy_pool(proxies)
 
-        # 上述三种输入最终都交给同一个 selector：str/dict 会在 cooldown 中等待自身恢复，tuple 则会跳过 cooldown 候选并在每轮外层 retry 换一个尚未尝试的代理
-        # selector 在每个 Booru.request 只创建一次，因此代理池的 normalize、select_proxy 与凭据脱敏不会在每轮 tenacity attempt 重复执行
-        proxy_selector = ProxySelector(
+        # prepared pool 只共享不可变代理配置与 URL route 解析结果；request-local selector 每次新建，确保外层 retry 的“不放回”状态不会跨并发请求传播
+        proxy_selector = prepared_proxy_pool.selector(
             url=url,
-            proxies=effective_proxies,
             tracker=self._proxy_cooldown,
             base_url=self.client.base_url,
         )
@@ -1444,7 +1457,6 @@ class Booru:
             start_page (int): 查询起始页码
             end_page (int): 查询结束页码
             page_key (str): 页码参数的名称，用于在传递的 params 参数中设置页码
-            concurrency (int, optional): 并发下载的数量. Defaults to 8.
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
             **kwargs: 传递给 niquests.AsyncSession.request 的其它关键字参数
 
