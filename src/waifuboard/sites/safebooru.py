@@ -372,7 +372,7 @@ class SafebooruPosts(SafebooruComponent):
                 logger.info(f"All of the posts {i + 1} are empty.")
                 continue
 
-            # 同一个 URL 会写入同一个目标文件，重复提交既会产生并发写冲突，也无法根据 DownloadResult 区分它对应哪一条源记录；因此按输入顺序保留首条非空 URL
+            # 同一个 URL 会写入同一个目标文件，重复提交会产生并发写冲突；下载 helper 成功时只返回 (url, filepath)、失败时返回 None，因此也无法用重复结果可靠关联多条源记录，按输入顺序保留首条非空 URL
             download_posts = posts.dropna(subset=["file_url"]).drop_duplicates(
                 subset=["file_url"], keep="first"
             )
