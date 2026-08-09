@@ -30,8 +30,11 @@ _EnvironmentProxySnapshot: TypeAlias = tuple[
 ]
 _EnvironmentProxySnapshots: TypeAlias = tuple[_EnvironmentProxySnapshot, ...]
 
+# prepared cache 的一项代表一整份代理配置快照，而不是池中的一个 proxy；128 项足以覆盖全局池和少量 request override，同时限制动态配置长期运行时的内存占用
 PREPARED_PROXY_CACHE_SIZE = 128
-PROXY_ROUTE_CACHE_SIZE = 256
+# niquests.proxy_manager 的每个 cache value 只对应一个实际使用过的 proxy，而这里每个 route value 都包含整份代理池的解析结果，不能按 niquests 的无界字典处理
+# functools.lru_cache 装饰的是类方法函数，因此 32 是所有 PreparedProxyPool 实例共享的“配置快照 + scheme/authority + 环境代理快照”总上限；常见 API/CDN origin 可以直接命中，数千代理的池也不会因 256 份完整 route 快照长期占用大量内存
+PROXY_ROUTE_CACHE_SIZE = 32
 
 
 @dataclass(frozen=True)
@@ -322,6 +325,7 @@ def _candidate_cache_key(candidate: ProxyCandidateType) -> _ProxyCandidateCacheK
     """
     if isinstance(candidate, str):
         return ("url", candidate)
+    # 不能按 dict identity 缓存：调用方原地修改 mapping 时对象 id 不变；按当前内容排序生成快照后，修改会自然形成新 key，而键顺序不同但语义相同的 mapping 仍可共享缓存
     return ("mapping", tuple(sorted(candidate.items())))
 
 
@@ -335,6 +339,7 @@ def _proxy_config_cache_key(proxies: ProxyPoolType) -> _ProxyConfigCacheKey:
         _ProxyConfigCacheKey: Tagged key preserving pool order and duplicate weights.
     """
     if isinstance(proxies, tuple):
+        # tuple 顺序与重复项会影响随机权重，必须完整进入 key；mapping/url 标签则避免结构相似的不同输入形态发生碰撞
         return ("pool", tuple(_candidate_cache_key(item) for item in proxies))
     return ("single", _candidate_cache_key(proxies))
 
