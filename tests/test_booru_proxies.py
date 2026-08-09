@@ -10,11 +10,13 @@ from waifuboard.booru import Booru, BodyFormValueType, QueryParameterScalarType
 from waifuboard.observability import format_bytes, format_request_error
 from waifuboard.proxy import (
     ProxyCooldownTracker,
+    PreparedProxyPool,
     format_proxy_key,
     normalize_proxy,
     prepare_proxy_pool,
     resolve_proxy,
 )
+from waifuboard.proxy.pool import _prepare_proxy_pool_cached
 
 
 class DummyRequest:
@@ -77,6 +79,16 @@ class CapturingClient:
 
 
 class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        """Start each test with empty shared proxy preparation caches."""
+        _prepare_proxy_pool_cached.cache_clear()
+        PreparedProxyPool._resolve_route.cache_clear()
+
+    def tearDown(self):
+        """Prevent one test's prepared pools and routes from leaking to another."""
+        PreparedProxyPool._resolve_route.cache_clear()
+        _prepare_proxy_pool_cached.cache_clear()
+
     async def test_instance_proxy_pool_is_normalized_only_during_initialization(self):
         proxies = tuple(
             f"http://proxy-{index}.test:8080" for index in range(10)
