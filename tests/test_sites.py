@@ -70,13 +70,21 @@ class PaginationParserTests(unittest.TestCase):
 
 class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def _assert_download_sidecars_follow_result_urls(self, component):
-        """Assert sidecars follow returned URLs instead of completion positions."""
+        """Assert unique downloads and sidecars follow returned URLs."""
         await component.download(save_raws=True, save_tags=True)
 
-        self.assertEqual(component.client.saved_raw_ids, [3, 1, 4])
+        self.assertEqual(
+            component.client.download_urls,
+            [
+                "https://example.test/a.jpg",
+                "https://example.test/skipped.jpg",
+                "https://example.test/b.jpg",
+            ],
+        )
+        self.assertEqual(component.client.saved_raw_ids, [3, 1])
         self.assertEqual(
             component.client.saved_tags,
-            ["tag-b", "tag-a-first", "tag-a-second"],
+            ["tag-b", "tag-a-first"],
         )
 
     async def test_pagination_probes_return_site_specific_fallbacks(self):
@@ -166,14 +174,15 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
             def __init__(self, directory):
                 self.directory = directory
+                self.download_urls = []
                 self.saved_raw_ids = []
                 self.saved_tags = []
 
-            async def concurrent_download_file(self, *args, **kwargs):
+            async def concurrent_download_file(self, urls, *args, **kwargs):
+                self.download_urls = list(urls)
                 yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
                 yield None
                 yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
-                yield ("https://example.test/a.jpg", f"{self.directory}/a-2.jpg")
 
             async def save_raws(self, raws, **kwargs):
                 self.saved_raw_ids.append(raws.iloc[0]["id"])
@@ -190,6 +199,7 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
                     {"id": 2, "file_url": "https://example.test/skipped.jpg", "tags": "tag-skipped"},
                     {"id": 3, "file_url": "https://example.test/b.jpg", "tags": "tag-b"},
                     {"id": 4, "file_url": "https://example.test/a.jpg", "tags": "tag-a-second"},
+                    {"id": 5, "file_url": None, "tags": "tag-null"},
                 ]
 
             posts.list = fake_list
@@ -201,14 +211,15 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
             def __init__(self, directory):
                 self.directory = directory
+                self.download_urls = []
                 self.saved_raw_ids = []
                 self.saved_tags = []
 
-            async def concurrent_download_file(self, *args, **kwargs):
+            async def concurrent_download_file(self, urls, *args, **kwargs):
+                self.download_urls = list(urls)
                 yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
                 yield None
                 yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
-                yield ("https://example.test/a.jpg", f"{self.directory}/a-2.jpg")
 
             async def save_raws(self, raws, **kwargs):
                 self.saved_raw_ids.append(raws.iloc[0]["id"])
@@ -228,6 +239,7 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
                     {"id": 2, "file_url": "https://example.test/skipped.jpg", "tags": "tag-skipped"},
                     {"id": 3, "file_url": "https://example.test/b.jpg", "tags": "tag-b"},
                     {"id": 4, "file_url": "https://example.test/a.jpg", "tags": "tag-a-second"},
+                    {"id": 5, "file_url": None, "tags": "tag-null"},
                 ]
 
             pools.list_pools = fake_list_pools
@@ -240,14 +252,15 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
 
             def __init__(self, directory):
                 self.directory = directory
+                self.download_urls = []
                 self.saved_raw_ids = []
                 self.saved_tags = []
 
-            async def concurrent_download_file(self, *args, **kwargs):
+            async def concurrent_download_file(self, urls, *args, **kwargs):
+                self.download_urls = list(urls)
                 yield ("https://example.test/b.jpg", f"{self.directory}/b.jpg")
                 yield None
                 yield ("https://example.test/a.jpg", f"{self.directory}/a-1.jpg")
-                yield ("https://example.test/a.jpg", f"{self.directory}/a-2.jpg")
 
             async def save_raws(self, raws, **kwargs):
                 self.saved_raw_ids.append(raws.iloc[0]["id"])
@@ -264,6 +277,7 @@ class SiteReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
                     {"id": 2, "file_url": "https://example.test/skipped.jpg", "tags": "tag-skipped"},
                     {"id": 3, "file_url": "https://example.test/b.jpg", "tags": "tag-b"},
                     {"id": 4, "file_url": "https://example.test/a.jpg", "tags": "tag-a-second"},
+                    {"id": 5, "file_url": None, "tags": "tag-null"},
                 ]
 
             posts.list = fake_list

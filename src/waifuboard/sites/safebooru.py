@@ -3,7 +3,6 @@ Safebooru Image Board API implementation.
 """
 
 import os
-from collections import deque
 from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
@@ -373,15 +372,16 @@ class SafebooruPosts(SafebooruComponent):
                 logger.info(f"All of the posts {i + 1} are empty.")
                 continue
 
-            # 下载帖子
-            urls = posts["file_url"]  # 帖子 URLs
+            # 同一个 URL 会写入同一个目标文件，重复提交既会产生并发写冲突，也无法根据 DownloadResult 区分它对应哪一条源记录；因此按输入顺序保留首条非空 URL
+            download_posts = posts.dropna(subset=["file_url"]).drop_duplicates(
+                subset=["file_url"], keep="first"
+            )
+            urls = download_posts["file_url"]  # 帖子 URLs
             if save_raws or save_tags:
-                # 下载 helper 按完成顺序返回结果，并会省略已存在文件对应的 URL，因此不能用结果序号反推源行；这里只在需要 sidecar 时按 URL 保存源索引队列，重复 URL 固定按输入顺序逐个消费
+                # 下载 helper 按完成顺序返回结果，并会省略失败或已有文件对应的 URL，因此不能用结果序号反推源行；仅在需要 sidecar 时建立 URL 到首条源记录的直接映射
                 source_indices_by_url = {
-                    file_url: deque(indices)
-                    for file_url, indices in posts.groupby(
-                        "file_url", sort=False
-                    ).groups.items()
+                    file_url: source_index
+                    for source_index, file_url in urls.items()
                 }
             if id is not None:  # 存储文件目录
                 posts_directory = os.path.join(self.directory, f"{id}")  # 帖子文件目录
@@ -409,7 +409,7 @@ class SafebooruPosts(SafebooruComponent):
 
                 url, filepath = res
                 if save_raws or save_tags:
-                    source_index = source_indices_by_url[url].popleft()
+                    source_index = source_indices_by_url[url]
 
                 # 保存帖子 api 响应的元数据（json 格式）
                 if save_raws:
