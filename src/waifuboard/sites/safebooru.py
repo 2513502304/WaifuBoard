@@ -3,17 +3,16 @@ Safebooru Image Board API implementation.
 """
 
 import os
-import re
 from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
-from lxml import etree
 
-from .booru import Booru, BooruComponent
-from .utils import logger
+from ..booru import Booru, BooruComponent
+from ..utils import format_request_error, logger
+from ._pagination import max_query_parameter
 
 __all__ = [
     # base classes
@@ -119,19 +118,17 @@ class SafebooruPosts(SafebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大 pid
-            tree = etree.HTML(response.text)
-            # 当前页为 b 标签，只有一页时，仅存在 b 标签；超过一页时，余下的页为 a 标签，且最后一页的 a 标签中含有 alt="last page" 属性
-            pagination = tree.xpath(
-                '//div[@class="pagination"]/a[@alt="last page"]/@href'
+            # Safebooru 在 last-page href 中携带从 0 开始的 pid；共享 helper 使用 URL 解析保留这一站点语义，而不是把它误当成从 1 开始的页码
+            return max_query_parameter(
+                response.text,
+                '//div[@class="pagination"]/a[@alt="last page"]/@href',
+                parameter="pid",
+                default=0,
             )
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                last_pid = re.findall(r"pid=(\d+)", pagination[0])[0]
-                return int(last_pid)
-            else:  # 不存在分页器，说明该页面只有一页
-                return 0
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # pid 从 0 开始；探测失败时返回最小有效值，让 all_page 仍能请求首批结果并保持 -> int 契约
+            return 0
 
     async def list(
         self,
@@ -271,7 +268,7 @@ class SafebooruPosts(SafebooruComponent):
                 )
 
                 #!超过 MAX_PID 限制时，不能获取忽略的帖子，因为再次使用 limit 参数请求下一页时会导致 pid 超过 200000
-                ignored_posts: bool = False
+                ignored_posts = False
 
             async for res in self.client.concurrent_fetch_page(
                 url,
@@ -318,8 +315,8 @@ class SafebooruPosts(SafebooruComponent):
             async for res in self.client.concurrent_fetch_page(
                 url,
                 params=params,
-                start_page=start_page - 1,
-                end_page=end_page - 1,
+                start_page=start_page,
+                end_page=end_page,
                 page_key="pid",
             ):
                 yield res
@@ -360,8 +357,9 @@ class SafebooruPosts(SafebooruComponent):
         async for i, posts in aenumerate(
             self.list(
                 limit=limit,
-                start_page=start_page,
-                end_page=end_page,
+                # list() 直接暴露 Safebooru 从 0 开始的 pid；download() 保留从 1 开始的用户页码，并在调用边界转换一次，避免默认下载产生 pid=-1 或跳过首批结果
+                start_page=start_page - 1,
+                end_page=end_page - 1,
                 all_page=all_page,
                 tags=tags,
                 cid=cid,
@@ -374,8 +372,17 @@ class SafebooruPosts(SafebooruComponent):
                 logger.info(f"All of the posts {i + 1} are empty.")
                 continue
 
-            # 下载帖子
-            urls = posts["file_url"]  # 帖子 URLs
+            # 同一个 URL 会写入同一个目标文件，重复提交会产生并发写冲突；下载 helper 成功时只返回 (url, filepath)、失败时返回 None，因此也无法用重复结果可靠关联多条源记录，按输入顺序保留首条非空 URL
+            download_posts = posts.dropna(subset=["file_url"]).drop_duplicates(
+                subset=["file_url"], keep="first"
+            )
+            urls = download_posts["file_url"]  # 帖子 URLs
+            if save_raws or save_tags:
+                # 下载 helper 按完成顺序返回结果，并会省略失败或已有文件对应的 URL，因此不能用结果序号反推源行；仅在需要 sidecar 时建立 URL 到首条源记录的直接映射
+                source_indices_by_url = {
+                    file_url: source_index
+                    for source_index, file_url in urls.items()
+                }
             if id is not None:  # 存储文件目录
                 posts_directory = os.path.join(self.directory, f"{id}")  # 帖子文件目录
                 images_directory = os.path.join(
@@ -390,11 +397,9 @@ class SafebooruPosts(SafebooruComponent):
                 )  # 图像文件目录
 
             success_count, failure_count = 0, 0
-            async for index, res in aenumerate(
-                self.client.concurrent_download_file(
-                    urls,
-                    images_directory,
-                )
+            async for res in self.client.concurrent_download_file(
+                urls,
+                images_directory,
             ):
                 if res is None:
                     failure_count += 1
@@ -403,11 +408,13 @@ class SafebooruPosts(SafebooruComponent):
                     success_count += 1
 
                 url, filepath = res
+                if save_raws or save_tags:
+                    source_index = source_indices_by_url[url]
 
                 # 保存帖子 api 响应的元数据（json 格式）
                 if save_raws:
                     # 保存元数据
-                    post_raws = posts.loc[[index]]  # 筛选后的元数据
+                    post_raws = posts.loc[[source_index]]  # 筛选后的元数据
                     raws_directory = os.path.join(
                         posts_directory, "raws"
                     )  # 元数据文件目录
@@ -424,7 +431,7 @@ class SafebooruPosts(SafebooruComponent):
                 # 保存标签
                 if save_tags:
                     # 帖子标签
-                    post_tags = posts.at[index, "tags"]  # 筛选后的 tags
+                    post_tags = posts.at[source_index, "tags"]  # 筛选后的 tags
                     tags_directory = os.path.join(
                         posts_directory, "tags"
                     )  # 标签文件目录

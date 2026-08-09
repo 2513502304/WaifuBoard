@@ -9,10 +9,10 @@ from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 import pandas as pd
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
-from lxml import etree
 
-from .booru import Booru, BooruComponent
-from .utils import logger
+from ..booru import Booru, BooruComponent
+from ..utils import format_request_error, logger
+from ._pagination import max_numeric_link_text
 
 __all__ = [
     # base classes
@@ -167,16 +167,15 @@ class DanbooruPosts(DanbooruComponent):
 
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
-            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2].xpath("./text()")[0])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # Parsel 会完成 HTML 容错解析；共享 helper 只读取数字链接，因此不依赖 Next 按钮必须位于最后、末页链接必须位于倒数第二的页面结构
+            return max_numeric_link_text(
+                response.text,
+                '//div[contains(@class, "paginator")]/a',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # 分页探测失败时返回 Danbooru 的最小有效页码，保持 -> int 契约，并允许 all_page 调用方至少继续请求第一页
+            return 1
 
     async def index(
         self,
@@ -817,18 +816,15 @@ class DanbooruTags(DanbooruComponent):
 
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
-            #!若访问 pools/gallery 页面，则无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
-            #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
-            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2].xpath("./text()")[0])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # Parsel 会完成 HTML 容错解析；共享 helper 只读取数字链接，因此不依赖 Next 按钮和末页链接在 DOM 中的相对位置
+            return max_numeric_link_text(
+                response.text,
+                '//div[contains(@class, "paginator")]/a',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # 分页探测失败时返回 Danbooru 的最小有效页码，保持 -> int 契约，并允许 all_page 调用方至少继续请求第一页
+            return 1
 
     async def index(
         self,
@@ -1198,18 +1194,15 @@ class DanbooruArtists(DanbooruComponent):
 
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
-            #!若访问 pools/gallery 页面，则无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
-            #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
-            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2].xpath("./text()")[0])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # Parsel 会完成 HTML 容错解析；共享 helper 只读取数字链接，因此不依赖 Next 按钮和末页链接在 DOM 中的相对位置
+            return max_numeric_link_text(
+                response.text,
+                '//div[contains(@class, "paginator")]/a',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # 分页探测失败时返回 Danbooru 的最小有效页码，保持 -> int 契约，并允许 all_page 调用方至少继续请求第一页
+            return 1
 
     async def index(
         self,
@@ -1635,18 +1628,15 @@ class DanbooruWikiPages(DanbooruComponent):
 
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
-            #!若访问 pools/gallery 页面，则无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
-            #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
-            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2].xpath("./text()")[0])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # Parsel 会完成 HTML 容错解析；共享 helper 只读取数字链接，因此不依赖 Next 按钮和末页链接在 DOM 中的相对位置
+            return max_numeric_link_text(
+                response.text,
+                '//div[contains(@class, "paginator")]/a',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # 分页探测失败时返回 Danbooru 的最小有效页码，保持 -> int 契约，并允许 all_page 调用方至少继续请求第一页
+            return 1
 
     async def index(
         self,
@@ -2108,18 +2098,15 @@ class DanbooruPools(DanbooruComponent):
 
         try:
             response = await self.client.get(url, headers=headers, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为最后一页（且为 hidden 属性）
-            #!若访问 pools/gallery 页面，则无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
-            #!但由于 pools/gallery 与 pools 内容一致，因此可以间接从 pools 页面中获取最后一页页码
-            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2].xpath("./text()")[0])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # Parsel 会完成 HTML 容错解析；共享 helper 只读取数字链接，因此不依赖 Next 按钮和末页链接在 DOM 中的相对位置
+            return max_numeric_link_text(
+                response.text,
+                '//div[contains(@class, "paginator")]/a',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # 分页探测失败时返回 Danbooru 的最小有效页码，保持 -> int 契约，并允许 all_page 调用方至少继续请求第一页
+            return 1
 
     async def index(
         self,
@@ -2550,73 +2537,9 @@ class DanbooruPostVersions(DanbooruComponent):
         Returns:
             int: html 分页器中的最大页码，实际的最大页码等于该页码
         """
-        if query is None:
-            query = {}
-
-        url = "/post_versions"
-        headers = {
-            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
-        }
-        params = {
-            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            "page": 1,  # 查询页码
-        }
-        # 更新搜索参数
-        params.update(query)
-
         #!当前 post_versions 页码，无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
-        try:
-            return (
-                self.client.MAX_PAGE
-            )  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
-
-            #!very slowly way, start with page 1
-            current_page = 1
-            #!first request, check pagination is exist or not
-            response = await self.client.get(url, headers=headers, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为当前页向后 +4 页或最后一页
-            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                current_page = int(pagination[-2].xpath("./text()")[0])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
-
-            # TODO 改变 xpath 表达式（并非从第一页开始）
-            #!gap some page
-            params["page"] = gap_page = current_page
-            while gap_page < 1000:
-                current_page = gap_page
-                response = await self.client.get(url, headers=headers, params=params)
-                # 解析 html 分页器中的最大页码
-                tree = etree.HTML(response.text)
-                # TODO
-                pagination = tree.xpath("???")
-                if pagination:  # 存在分页器，说明该页面至少有两页
-                    gap_page  # TODO update gap_page
-                    params["page"] = gap_page
-                else:
-                    pass
-
-            # TODO 改变 xpath 表达式（并非从第一页开始）
-            #!slow down, check any remain page is exist or not
-            for i in range(
-                current_page, 1000 + 1
-            ):  # (1 + 4 * 249) = 997, range in [997, 1000]
-                params["page"] = i
-                response = await self.client.get(url, headers=headers, params=params)
-                # 解析 html 分页器中的最大页码
-                tree = etree.HTML(response.text)
-                # TODO
-                pagination = tree.xpath("???")
-                if pagination:  # 存在分页器，说明该页面至少有两页
-                    pass
-                else:  # 不存在分页器，说明该页面只有一页
-                    pass
-            return current_page
-        except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+        # 页面不暴露可靠的末页链接，无法像其他资源一样解析实际末页；固定返回账号允许的上限，由超出实际范围后的空响应自然终止数据获取
+        return self.client.MAX_PAGE
 
     async def index(
         self,
@@ -2853,73 +2776,9 @@ class DanbooruPoolVersions(DanbooruComponent):
         Returns:
             int: html 分页器中的最大页码，实际的最大页码等于该页码
         """
-        if query is None:
-            query = {}
-
-        url = "/pool_versions"
-        headers = {
-            "User-Agent": "python",  # wtf? why you let this UA pass and block my normal UA?
-        }
-        params = {
-            "limit": limit,  # 每页返回的结果数量。对于 /posts.json 最大限制为 200，其他情况为 1000
-            "page": 1,  # 查询页码
-        }
-        # 更新搜索参数
-        params.update(query)
-
         #!当前 pool_versions 页码，无法获取最后一页页码（原网页中唯独缺少了该页码的 a 标签）
-        try:
-            return (
-                self.client.MAX_PAGE
-            )  # 暂未实现，返回最大页数（超出最大页数的请求返回为空，不会影响最后数据获取的总量，但会延长程序运行的时间）
-
-            #!very slowly way, start with page 1
-            current_page = 1
-            #!first request, check pagination is exist or not
-            response = await self.client.get(url, headers=headers, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 当前页为 span 标签，只有一页时，仅存在 span 标签；超过一页时，余下的页为 a 标签，最后一个 a 标签为下一页，倒数第二个 a 标签为当前页向后 +4 页或最后一页
-            pagination = tree.xpath('//div[contains(@class, "paginator")]/a')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                current_page = int(pagination[-2].xpath("./text()")[0])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
-
-            # TODO 改变 xpath 表达式（并非从第一页开始）
-            #!gap some page
-            params["page"] = gap_page = current_page
-            while gap_page < 1000:
-                current_page = gap_page
-                response = await self.client.get(url, headers=headers, params=params)
-                # 解析 html 分页器中的最大页码
-                tree = etree.HTML(response.text)
-                # TODO
-                pagination = tree.xpath("???")
-                if pagination:  # 存在分页器，说明该页面至少有两页
-                    gap_page  # TODO update gap_page
-                    params["page"] = gap_page
-                else:
-                    pass
-
-            # TODO 改变 xpath 表达式（并非从第一页开始）
-            #!slow down, check any remain page is exist or not
-            for i in range(
-                current_page, 1000 + 1
-            ):  # (1 + 4 * 249) = 997, range in [997, 1000]
-                params["page"] = i
-                response = await self.client.get(url, headers=headers, params=params)
-                # 解析 html 分页器中的最大页码
-                tree = etree.HTML(response.text)
-                # TODO
-                pagination = tree.xpath("???")
-                if pagination:  # 存在分页器，说明该页面至少有两页
-                    pass
-                else:  # 不存在分页器，说明该页面只有一页
-                    pass
-            return current_page
-        except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+        # 页面不暴露可靠的末页链接，无法像其他资源一样解析实际末页；固定返回账号允许的上限，由超出实际范围后的空响应自然终止数据获取
+        return self.client.MAX_PAGE
 
     async def index_version(
         self,

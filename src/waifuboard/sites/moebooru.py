@@ -7,12 +7,13 @@ from collections.abc import AsyncIterable
 from niquests.typing import HttpAuthenticationType, AsyncHttpAuthenticationType
 
 import pandas as pd
+import orjson
 from asyncstdlib import enumerate as aenumerate
 from niquests.exceptions import RequestException
-from lxml import etree
 
-from .booru import Booru, BooruComponent
-from .utils import logger
+from ..booru import Booru, BooruComponent
+from ..utils import format_request_error, logger
+from ._pagination import max_numeric_link_text
 
 __all__ = [
     # base classes
@@ -118,16 +119,15 @@ class YanderePosts(MoebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
-            pagination = tree.xpath('//div[@class="pagination"]/a[@aria-label]/text()')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # yande.re 会在数字链接后追加 Next；共享 Parsel helper 只读取数字标签，避免导航文案或链接顺序变化导致页码解析错误
+            return max_numeric_link_text(
+                response.text,
+                '//div[@class="pagination"]/a[@aria-label]',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # 分页探测失败时使用从 1 开始的最小有效页码；返回 None 会在 all_page 的范围计算中触发类型错误
+            return 1
 
     async def list(
         self,
@@ -254,7 +254,8 @@ class YanderePosts(MoebooruComponent):
 
             # 当前查询页码
             page = gt_page + 1
-            # 直到获取到空数据为止
+            previous_page_signature: bytes | None = None
+            # HTML 分页器可能低估受隐藏帖子影响的实际页数，因此继续逐页读取直到空页；同时检测服务端忽略过大 page 后重复返回上一页的行为，防止无限循环
             while True:
                 params.update({"page": page})
                 content: list[dict] = await self.client.fetch_page(
@@ -262,6 +263,17 @@ class YanderePosts(MoebooruComponent):
                     params=params,
                 )
                 if content:
+                    # API 页面来自 JSON；排序 key 后序列化可得到与 dict 插入顺序无关的稳定签名，只保留上一页签名即可让内存保持常量
+                    page_signature = orjson.dumps(
+                        content,
+                        option=orjson.OPT_SORT_KEYS,
+                    )
+                    if page_signature == previous_page_signature:
+                        logger.warning(
+                            f"Stopping pagination at page {page}: the server repeated the previous non-empty page."
+                        )
+                        break
+                    previous_page_signature = page_signature
                     yield content
                     page += 1
                 else:
@@ -338,19 +350,26 @@ class YanderePosts(MoebooruComponent):
                 logger.info(f"All of the posts {i + 1} are empty.")
                 continue
 
-            # 下载帖子
-            urls = posts["file_url"]  # 帖子 URLs
+            # 同一个 URL 会写入同一个目标文件，重复提交会产生并发写冲突；下载 helper 成功时只返回 (url, filepath)、失败时返回 None，因此也无法用重复结果可靠关联多条源记录，按输入顺序保留首条非空 URL
+            download_posts = posts.dropna(subset=["file_url"]).drop_duplicates(
+                subset=["file_url"], keep="first"
+            )
+            urls = download_posts["file_url"]  # 帖子 URLs
+            if save_raws or save_tags:
+                # 下载 helper 按完成顺序返回结果，并会省略失败或已有文件对应的 URL，因此不能用结果序号反推源行；仅在需要 sidecar 时建立 URL 到首条源记录的直接映射
+                source_indices_by_url = {
+                    file_url: source_index
+                    for source_index, file_url in urls.items()
+                }
             posts_directory = os.path.join(
                 self.directory, f"{tags if tags != '' else 'all'}"
             )  # 帖子文件目录
             images_directory = os.path.join(posts_directory, "images")  # 图像文件目录
 
             success_count, failure_count = 0, 0
-            async for index, res in aenumerate(
-                self.client.concurrent_download_file(
-                    urls,
-                    images_directory,
-                )
+            async for res in self.client.concurrent_download_file(
+                urls,
+                images_directory,
             ):
                 if res is None:
                     failure_count += 1
@@ -359,11 +378,13 @@ class YanderePosts(MoebooruComponent):
                     success_count += 1
 
                 url, filepath = res
+                if save_raws or save_tags:
+                    source_index = source_indices_by_url[url]
 
                 # 保存帖子 api 响应的元数据（json 格式）
                 if save_raws:
                     # 保存元数据
-                    post_raws = posts.loc[[index]]  # 筛选后的元数据
+                    post_raws = posts.loc[[source_index]]  # 筛选后的元数据
                     raws_directory = os.path.join(
                         posts_directory, "raws"
                     )  # 元数据文件目录
@@ -380,7 +401,7 @@ class YanderePosts(MoebooruComponent):
                 # 保存标签
                 if save_tags:
                     # 帖子标签
-                    post_tags = posts.at[index, "tags"]  # 筛选后的 tags
+                    post_tags = posts.at[source_index, "tags"]  # 筛选后的 tags
                     tags_directory = os.path.join(
                         posts_directory, "tags"
                     )  # 标签文件目录
@@ -603,16 +624,15 @@ class YanderePools(MoebooruComponent):
 
         try:
             response = await self.client.get(url, params=params)
-            # 解析 html 分页器中的最大页码
-            tree = etree.HTML(response.text)
-            # 形如 ['2', '3', '4', '5', '1067', '1068', 'Next →'] 的样式。列表中的最后一个永远为 'Next →'；由于请求的 url 中的 page 参数固定为 1，当前页码信息 1 使用 em 标签而非 a 标签，故列表若存在，则永远以 2 开头
-            pagination = tree.xpath('//div[@class="pagination"]/a[@aria-label]/text()')
-            if pagination:  # 存在分页器，说明该页面至少有两页
-                return int(pagination[-2])
-            else:  # 不存在分页器，说明该页面只有一页
-                return 1
+            # pool 与 post 使用相同的分页 DOM；只提取数字链接可兼容导航链接文案或顺序调整
+            return max_numeric_link_text(
+                response.text,
+                '//div[@class="pagination"]/a[@aria-label]',
+            )
         except RequestException as exc:
-            logger.error(f"{exc.__class__.__name__} for {exc.request.url} - {exc}")
+            logger.error(format_request_error(exc))
+            # pool 页码同样从 1 开始，失败时返回最小有效页而不是破坏 -> int 契约
+            return 1
 
     async def list_pools(
         self,
@@ -851,15 +871,29 @@ class YanderePools(MoebooruComponent):
             names = pools["name"]
 
             # 遍历图集列表
-            for id, name in zip(ids, names):
+            for pool_id, name in zip(ids, names, strict=True):
                 # 获取图集 ID 下所有帖子
                 posts = await self.list_posts(
-                    id=id,
+                    id=pool_id,
                 )
                 posts = pd.DataFrame(posts)
 
-                # 下载帖子
-                urls = posts["file_url"]  # 帖子 URLs
+                # 空图集没有 file_url 列；必须在列访问和下载 helper 之前跳过，避免 KeyError 以及无意义的空下载批次
+                if posts.empty:
+                    logger.info(f"Posts of pool {name} are empty.")
+                    continue
+
+                # 同一个 URL 会写入同一个目标文件，重复提交会产生并发写冲突；下载 helper 成功时只返回 (url, filepath)、失败时返回 None，因此也无法用重复结果可靠关联多条源记录，按输入顺序保留首条非空 URL
+                download_posts = posts.dropna(subset=["file_url"]).drop_duplicates(
+                    subset=["file_url"], keep="first"
+                )
+                urls = download_posts["file_url"]  # 帖子 URLs
+                if save_raws or save_tags:
+                    # 下载 helper 按完成顺序返回结果，并会省略失败或已有文件对应的 URL，因此不能用结果序号反推源行；仅在需要 sidecar 时建立 URL 到首条源记录的直接映射
+                    source_indices_by_url = {
+                        file_url: source_index
+                        for source_index, file_url in urls.items()
+                    }
                 posts_directory = os.path.join(
                     self.directory, f"{name}"
                 )  # 帖子文件目录
@@ -868,11 +902,9 @@ class YanderePools(MoebooruComponent):
                 )  # 图像文件目录
 
                 success_count, failure_count = 0, 0
-                async for index, res in aenumerate(
-                    self.client.concurrent_download_file(
-                        urls,
-                        images_directory,
-                    )
+                async for res in self.client.concurrent_download_file(
+                    urls,
+                    images_directory,
                 ):
                     if res is None:
                         failure_count += 1
@@ -880,11 +912,13 @@ class YanderePools(MoebooruComponent):
                     else:
                         success_count += 1
                     url, filepath = res
+                    if save_raws or save_tags:
+                        source_index = source_indices_by_url[url]
 
                     # 保存帖子 api 响应的元数据（json 格式）
                     if save_raws:
                         # 保存元数据
-                        pool_raws = posts.loc[[index]]  # 筛选后的元数据
+                        pool_raws = posts.loc[[source_index]]  # 筛选后的元数据
                         raws_directory = os.path.join(
                             posts_directory, "raws"
                         )  # 元数据文件目录
@@ -901,7 +935,7 @@ class YanderePools(MoebooruComponent):
                     # 保存标签
                     if save_tags:
                         # 帖子标签
-                        pool_tags = posts.at[index, "tags"]  # 筛选后的 tags
+                        pool_tags = posts.at[source_index, "tags"]  # 筛选后的 tags
                         tags_directory = os.path.join(
                             posts_directory, "tags"
                         )  # 标签文件目录
