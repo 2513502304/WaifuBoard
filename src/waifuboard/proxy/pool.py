@@ -7,8 +7,15 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urlparse
+from urllib.request import getproxies
 
-from niquests.utils import merge_base_url, select_proxy
+from niquests.utils import (
+    get_environ_proxies,
+    merge_base_url,
+    parse_scheme,
+    select_proxy,
+    should_bypass_proxies,
+)
 
 from ..observability import format_elapsed, logger
 from .cooldown import DIRECT_PROXY_KEY, ProxyCooldownTracker
@@ -17,6 +24,11 @@ ProxyCandidateType: TypeAlias = dict[str, str] | str
 ProxyPoolType: TypeAlias = ProxyCandidateType | tuple[ProxyCandidateType, ...]
 _ProxyCandidateCacheKey: TypeAlias = tuple[Literal["mapping", "url"], Any]
 _ProxyConfigCacheKey: TypeAlias = tuple[Literal["pool", "single"], Any]
+_EnvironmentProxySnapshot: TypeAlias = tuple[
+    str | None,
+    tuple[tuple[str, str], ...],
+]
+_EnvironmentProxySnapshots: TypeAlias = tuple[_EnvironmentProxySnapshot, ...]
 
 PREPARED_PROXY_CACHE_SIZE = 128
 PROXY_ROUTE_CACHE_SIZE = 256
@@ -175,6 +187,13 @@ class PreparedProxyPool:
         self._normalized_candidates = tuple(
             normalize_proxy(candidate) for candidate in candidates
         )
+        # no_proxy 可以按候选配置；初始化时提取唯一值，request 热路径只需为每种策略读取一次环境代理，而不是按候选数量重复读取
+        self._no_proxy_values = tuple(
+            dict.fromkeys(
+                candidate.get("no_proxy")
+                for candidate in self._normalized_candidates
+            )
+        ) or (None,)
 
     def selector(
         self,
@@ -182,6 +201,7 @@ class PreparedProxyPool:
         url: str,
         tracker: ProxyCooldownTracker,
         base_url: str | None = None,
+        trust_env: bool = False,
     ) -> "ProxySelector":
         """Create independent retry selection state for one logical request.
 
@@ -189,41 +209,106 @@ class PreparedProxyPool:
             url (str): Absolute or relative request URL used for proxy resolution.
             tracker (ProxyCooldownTracker): Shared health tracker used to skip cooling proxies.
             base_url (str | None): Session base URL used to resolve relative request URLs.
+            trust_env (bool): Whether niquests will merge process environment proxies into the request.
 
         Returns:
             ProxySelector: Request-local selector backed by cached prepared metadata.
         """
         route_url = _proxy_route_url(url, base_url)
+        environment_snapshots = (
+            self._environment_proxy_snapshots(route_url) if trust_env else ()
+        )
         return ProxySelector(
-            candidates=self._resolve_route(route_url),
+            candidates=self._resolve_route(route_url, environment_snapshots),
             is_pool=self._is_pool,
             tracker=tracker,
         )
 
     @lru_cache(maxsize=PROXY_ROUTE_CACHE_SIZE)
-    def _resolve_route(self, route_url: str) -> tuple[_ProxyCandidate, ...]:
+    def _resolve_route(
+        self,
+        route_url: str,
+        environment_snapshots: _EnvironmentProxySnapshots,
+    ) -> tuple[_ProxyCandidate, ...]:
         """Resolve every prepared candidate once for one proxy-routing origin.
 
         Args:
             route_url (str): Scheme-and-authority URL used by niquests ``select_proxy``.
+            environment_snapshots (_EnvironmentProxySnapshots): Current environment proxy mappings grouped by candidate ``no_proxy`` value.
 
         Returns:
             tuple[_ProxyCandidate, ...]: Resolved candidates in original pool order.
         """
+        environment_by_no_proxy = {
+            no_proxy: dict(items)
+            for no_proxy, items in environment_snapshots
+        }
+        if not self._normalized_candidates and environment_snapshots:
+            # 显式空 tuple 没有候选，但 niquests 在 trust_env=True 时仍会把空 request mapping 与环境代理合并；构造一个虚拟候选才能让实际连接、日志和 cooldown 保持一致
+            effective_proxies = environment_by_no_proxy[None]
+            if effective_proxies:
+                resolution = resolve_proxy(route_url, effective_proxies)
+                return (
+                    _ProxyCandidate(
+                        index=0,
+                        selection=ProxySelection(
+                            proxies=effective_proxies,
+                            key=resolution.key,
+                            log=resolution.log,
+                        ),
+                    ),
+                )
+
         resolved_candidates = []
         for index, proxies in enumerate(self._normalized_candidates):
-            resolution = resolve_proxy(route_url, proxies)
+            if environment_snapshots:
+                # AsyncSession.merge_environment_settings 使用 environment 在前、request mapping 在后的合并顺序；prepared metadata 必须使用同一 effective mapping，才能让日志与 cooldown identity 对应实际连接代理
+                effective_proxies = {
+                    **environment_by_no_proxy[proxies.get("no_proxy")],
+                    **proxies,
+                }
+            else:
+                effective_proxies = proxies
+            resolution = resolve_proxy(route_url, effective_proxies)
             resolved_candidates.append(
                 _ProxyCandidate(
                     index=index,
                     selection=ProxySelection(
-                        proxies=proxies,
+                        proxies=effective_proxies,
                         key=resolution.key,
                         log=resolution.log,
                     ),
                 )
             )
         return tuple(resolved_candidates)
+
+    def _environment_proxy_snapshots(
+        self,
+        route_url: str,
+    ) -> _EnvironmentProxySnapshots:
+        """Capture hashable environment mappings for every candidate bypass policy.
+
+        Args:
+            route_url (str): Scheme-and-authority URL used to evaluate environment proxy bypass rules.
+
+        Returns:
+            _EnvironmentProxySnapshots: Current environment mappings suitable for a route-cache key.
+        """
+        # 环境变量可能在长时间运行的进程中变化；把当前快照放进 route-cache key，既复用稳定环境下的解析结果，也不会在变化后继续使用陈旧代理
+        # urllib/niquests 的 get_environ_proxies 会先调用 getproxies 再判断 no_proxy；这里先读取一次共享快照，避免候选池包含多种 bypass 规则时重复查询系统代理配置
+        environment_proxies = getproxies()
+        return tuple(
+            (
+                no_proxy,
+                (
+                    ()
+                    if not environment_proxies
+                    or should_bypass_proxies(route_url, no_proxy=no_proxy)
+                    else tuple(sorted(environment_proxies.items()))
+                ),
+            )
+            for no_proxy in self._no_proxy_values
+        )
 
 
 def _candidate_cache_key(candidate: ProxyCandidateType) -> _ProxyCandidateCacheKey:
@@ -302,6 +387,51 @@ def prepare_proxy_pool(proxies: ProxyPoolType) -> PreparedProxyPool:
     """
     # 每次 request override 只计算轻量内容 key；相同配置复用 normalize 与 route cache，修改后的 dict 因 key 改变而不会命中陈旧配置
     return _prepare_proxy_pool_cached(_proxy_config_cache_key(proxies))
+
+
+def resolve_outcome_proxy(
+    selection: ProxySelection,
+    url: str,
+    *,
+    trust_env: bool = False,
+    base_url: str | None = None,
+) -> ProxySelection:
+    """Resolve the proxy identity used by a final response or failed redirect.
+
+    Args:
+        selection (ProxySelection): Effective mapping and identity selected for the initial request URL.
+        url (str): Final prepared request URL associated with the response or exception.
+        trust_env (bool): Whether niquests may add an environment proxy while rebuilding a redirected request.
+        base_url (str | None): Optional session base URL for a relative request URL.
+
+    Returns:
+        ProxySelection: Isolated mapping with identity resolved for the supplied URL.
+    """
+    request_url = merge_base_url(base_url, url) or url
+    effective_proxies = selection.proxies
+    resolution = resolve_proxy(request_url, effective_proxies)
+
+    if resolution.key is None and trust_env:
+        # niquests 在 redirect rebuild 时只为当前 scheme 补充缺失的 environment proxy；仅在现有 mapping 无法解析代理时执行同样操作，避免普通响应重复读取环境
+        environment_proxies = get_environ_proxies(
+            request_url,
+            no_proxy=effective_proxies.get("no_proxy"),
+        )
+        scheme = parse_scheme(request_url)
+        environment_proxy = environment_proxies.get(
+            scheme,
+            environment_proxies.get("all"),
+        )
+        if environment_proxy:
+            effective_proxies = effective_proxies.copy()
+            effective_proxies.setdefault(scheme, environment_proxy)
+            resolution = resolve_proxy(request_url, effective_proxies)
+
+    return ProxySelection(
+        proxies=effective_proxies.copy(),
+        key=resolution.key,
+        log=resolution.log,
+    )
 
 
 # * =================================================
@@ -383,7 +513,7 @@ class ProxySelector:
 
                 selected = random.choice(unused_candidates)
                 self._used_candidate_indexes.add(selected.index)
-                return selected.selection
+                return self._copy_selection(selected.selection)
 
             wait_seconds = min(remaining_by_key.values(), default=0.0)
             logger.warning(
@@ -418,7 +548,7 @@ class ProxySelector:
                 unused_offset -= 1
 
         self._used_candidate_indexes.add(selected.index)
-        return selected.selection
+        return self._copy_selection(selected.selection)
 
     async def _select_single(self, selection: ProxySelection) -> ProxySelection:
         """Wait for and return the only configured proxy selection.
@@ -430,7 +560,7 @@ class ProxySelector:
             ProxySelection: Single proxy after any active cooldown has expired.
         """
         if not self._tracker.enabled or selection.key in (None, DIRECT_PROXY_KEY):
-            return selection
+            return self._copy_selection(selection)
 
         while True:
             remaining = self._tracker.remaining(cast(str, selection.key))
@@ -443,7 +573,24 @@ class ProxySelector:
             # 单代理没有替代候选，只能等待 cooldown 到期；若在此直接失败，调用方会在已配置代理仍可恢复的情况下提前收到异常
             await asyncio.sleep(remaining)
 
-        return selection
+        return self._copy_selection(selection)
+
+    @staticmethod
+    def _copy_selection(selection: ProxySelection) -> ProxySelection:
+        """Detach one returned selection from globally cached proxy metadata.
+
+        Args:
+            selection (ProxySelection): Cached immutable-by-convention candidate metadata.
+
+        Returns:
+            ProxySelection: Request-local selection whose mapping may be safely consumed or mutated downstream.
+        """
+        # ProxySelection 是 frozen dataclass，但其中的 dict 仍可变；request-local copy 可防止 hook、niquests 未来版本或外部 helper 调用方污染全局 prepared cache
+        return ProxySelection(
+            proxies=selection.proxies.copy(),
+            key=selection.key,
+            log=selection.log,
+        )
 
 
 def format_proxy_log(

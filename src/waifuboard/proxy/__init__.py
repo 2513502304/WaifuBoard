@@ -12,6 +12,7 @@ from .pool import (
     normalize_proxy,
     prepare_proxy_pool,
     redact_proxy_url,
+    resolve_outcome_proxy,
     resolve_proxy,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "normalize_proxy",
     "prepare_proxy_pool",
     "redact_proxy_url",
+    "resolve_outcome_proxy",
     "resolve_proxy",
 ]

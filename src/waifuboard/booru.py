@@ -87,7 +87,12 @@ from .observability import (
     get_body_size,
     before_sleep_log,
 )
-from .proxy import ProxyCooldownTracker, ProxySelection, prepare_proxy_pool
+from .proxy import (
+    ProxyCooldownTracker,
+    ProxySelection,
+    prepare_proxy_pool,
+    resolve_outcome_proxy,
+)
 from .paths import normalize_filepath
 
 # niquests intentionally keeps its public typing narrower than some runtime-accepted
@@ -521,11 +526,14 @@ class Booru:
         else:
             prepared_proxy_pool = prepare_proxy_pool(proxies)
 
+        # 一次逻辑请求开始后固定使用同一 trust_env 快照，使初始代理解析与 redirect outcome 遵循同一规则；底层 session 配置不应在请求执行期间并发修改
+        trust_env = bool(getattr(self.client, "trust_env", False))
         # prepared pool 只共享不可变代理配置与 URL route 解析结果；request-local selector 每次新建，确保外层 retry 的“不放回”状态不会跨并发请求传播
         proxy_selector = prepared_proxy_pool.selector(
             url=url,
             tracker=self._proxy_cooldown,
             base_url=self.client.base_url,
+            trust_env=trust_env,
         )
 
         # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
@@ -617,12 +625,45 @@ class Booru:
                         json=json,
                     )
                     await self.client.gather(response)
-                except Exception:
+                except Exception as exc:
+                    failed_request_url = getattr(
+                        getattr(exc, "request", None),
+                        "url",
+                        None,
+                    )
+                    if (
+                        isinstance(failed_request_url, str)
+                        and failed_request_url != url
+                    ):
+                        # redirect 后的 transport exception 关联最终 PreparedRequest；按该 URL 重算 identity，避免把失败记到初始 host 使用的健康代理
+                        proxy_selection = resolve_outcome_proxy(
+                            proxy_selection,
+                            failed_request_url,
+                            trust_env=trust_env,
+                        )
                     # transport、adapter、gather 或 hook 抛出的异常都表示当前代理未完成请求；先记入健康状态，再交给 tenacity 决定是否还有外层预算
                     self._record_proxy_outcome(proxy_selection, failed=True)
                     raise
 
                 status_code = getattr(response, "status_code", None)
+                final_request_url = getattr(
+                    getattr(response, "request", None),
+                    "url",
+                    None,
+                )
+                if (
+                    isinstance(final_request_url, str)
+                    and (
+                        final_request_url != url
+                        or bool(getattr(response, "history", None))
+                    )
+                ):
+                    # niquests 会在 redirect 时按新 host/scheme 重新选择 proxy；状态、日志与 cooldown 必须归属最终响应实际使用的 route，而不是初始 URL 的 route
+                    proxy_selection = resolve_outcome_proxy(
+                        proxy_selection,
+                        final_request_url,
+                        trust_env=trust_env,
+                    )
                 is_expected_status = status_code in expected_status_codes
                 failed_status = (
                     isinstance(status_code, int)

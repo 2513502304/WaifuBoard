@@ -26,8 +26,9 @@ class DummyRequest:
 class DummyResponse:
     content = b"x" * 1536
 
-    def __init__(self, status_code=200, reason="OK"):
-        self.request = DummyRequest()
+    def __init__(self, status_code=200, reason="OK", request_url=None):
+        self.request_url = request_url
+        self.request = DummyRequest(url=request_url or "https://example.test/data.json")
         self.status_code = status_code
         self.reason = reason
         self.history = []
@@ -46,6 +47,7 @@ class DummyResponse:
 
 class CapturingClient:
     base_url = None
+    trust_env = False
 
     def __init__(self, response=None):
         self.request_kwargs = None
@@ -64,7 +66,10 @@ class CapturingClient:
         self.response = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
         if isinstance(self.response, Exception):
             raise self.response
-        self.response.request = DummyRequest(kwargs["method"], kwargs["url"])
+        self.response.request = DummyRequest(
+            kwargs["method"],
+            self.response.request_url or kwargs["url"],
+        )
         return self.response
 
     async def gather(self, response):
@@ -133,6 +138,114 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(first, second)
         self.assertEqual(first_selection.key, "http://proxy-a.test:8080")
         self.assertEqual(second_selection.key, "http://proxy-b.test:8080")
+
+    async def test_returned_selection_cannot_mutate_cached_proxy_metadata(self):
+        pool = prepare_proxy_pool({"https": "http://proxy-a.test:8080"})
+        tracker = ProxyCooldownTracker()
+
+        first_selection = await pool.selector(
+            url="https://example.test/first.json",
+            tracker=tracker,
+        ).select()
+        first_selection.proxies["https"] = "http://proxy-b.test:8080"
+        second_selection = await pool.selector(
+            url="https://example.test/second.json",
+            tracker=tracker,
+        ).select()
+
+        self.assertEqual(first_selection.proxies["https"], "http://proxy-b.test:8080")
+        self.assertEqual(second_selection.proxies["https"], "http://proxy-a.test:8080")
+        self.assertEqual(second_selection.key, "http://proxy-a.test:8080")
+
+    async def test_prepared_pool_tracks_effective_environment_proxy(self):
+        pool = prepare_proxy_pool({"https": "http://explicit.test:8080"})
+
+        with patch(
+            "waifuboard.proxy.pool.getproxies",
+            return_value={
+                "http": "http://environment.test:8080",
+                "http://restricted.test": "http://restricted-env.test:8080",
+            },
+        ):
+            selection = await pool.selector(
+                url="http://restricted.test/data.json",
+                tracker=ProxyCooldownTracker(),
+                trust_env=True,
+            ).select()
+
+        self.assertEqual(selection.key, "http://restricted-env.test:8080")
+        self.assertEqual(
+            selection.proxies["http://restricted.test"],
+            "http://restricted-env.test:8080",
+        )
+        self.assertEqual(selection.proxies["https"], "http://explicit.test:8080")
+
+    async def test_environment_proxy_change_invalidates_route_cache(self):
+        pool = prepare_proxy_pool({"https": "http://explicit.test:8080"})
+
+        with patch(
+            "waifuboard.proxy.pool.getproxies",
+            side_effect=[
+                {"http": "http://environment-a.test:8080"},
+                {"http": "http://environment-b.test:8080"},
+            ],
+        ):
+            first = await pool.selector(
+                url="http://example.test/first.json",
+                tracker=ProxyCooldownTracker(),
+                trust_env=True,
+            ).select()
+            second = await pool.selector(
+                url="http://example.test/second.json",
+                tracker=ProxyCooldownTracker(),
+                trust_env=True,
+            ).select()
+
+        self.assertEqual(first.key, "http://environment-a.test:8080")
+        self.assertEqual(second.key, "http://environment-b.test:8080")
+
+    async def test_environment_snapshot_is_read_once_for_distinct_bypass_rules(self):
+        pool = prepare_proxy_pool(
+            (
+                {
+                    "https": "http://proxy-a.test:8080",
+                    "no_proxy": "internal-a.test",
+                },
+                {
+                    "https": "http://proxy-b.test:8080",
+                    "no_proxy": "internal-b.test",
+                },
+            )
+        )
+
+        with patch(
+            "waifuboard.proxy.pool.getproxies",
+            return_value={"http": "http://environment.test:8080"},
+        ) as getproxies:
+            await pool.selector(
+                url="http://example.test/data.json",
+                tracker=ProxyCooldownTracker(),
+                trust_env=True,
+            ).select()
+
+        getproxies.assert_called_once_with()
+
+    async def test_empty_pool_tracks_environment_fallback_when_trusted(self):
+        with patch(
+            "waifuboard.proxy.pool.getproxies",
+            return_value={"https": "http://environment.test:8080"},
+        ):
+            selection = await prepare_proxy_pool(()).selector(
+                url="https://example.test/data.json",
+                tracker=ProxyCooldownTracker(),
+                trust_env=True,
+            ).select()
+
+        self.assertEqual(selection.key, "http://environment.test:8080")
+        self.assertEqual(
+            selection.proxies,
+            {"https": "http://environment.test:8080"},
+        )
 
     async def test_prepared_proxy_pool_keeps_host_specific_resolution(self):
         pool = prepare_proxy_pool(
@@ -578,6 +691,61 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
             client.request_history[1]["proxies"],
             {"http": "http://proxy-a.test:8080", "https": "http://proxy-a.test:8080"},
         )
+
+    async def test_redirect_failure_is_recorded_against_final_route_proxy(self):
+        initial_proxy = "http://initial.test:8080"
+        redirected_proxy = "http://redirected.test:8080"
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.CRITICAL,
+            trust_env=False,
+            max_attempt_number=1,
+            proxies={
+                "https": initial_proxy,
+                "https://cdn.example.test": redirected_proxy,
+            },
+            proxy_cooldown_threshold=1,
+            proxy_cooldown_seconds=60,
+        )
+        booru.client = CapturingClient(
+            DummyResponse(
+                429,
+                "Too Many Requests",
+                request_url="https://cdn.example.test/final.jpg",
+            )
+        )
+
+        await booru.get("https://example.test/image/1.jpg")
+
+        self.assertTrue(booru._proxy_cooldown.is_available(initial_proxy))
+        self.assertFalse(booru._proxy_cooldown.is_available(redirected_proxy))
+
+    async def test_redirect_transport_error_is_recorded_against_final_route_proxy(self):
+        initial_proxy = "http://initial.test:8080"
+        redirected_proxy = "http://redirected.test:8080"
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.CRITICAL,
+            trust_env=False,
+            max_attempt_number=1,
+            proxies={
+                "https": initial_proxy,
+                "https://cdn.example.test": redirected_proxy,
+            },
+            proxy_cooldown_threshold=1,
+            proxy_cooldown_seconds=60,
+        )
+        exc = RequestException(
+            "redirect transport failed",
+            request=DummyRequest(url="https://cdn.example.test/final.jpg"),
+        )
+        booru.client = CapturingClient(exc)
+
+        with self.assertRaises(RequestException):
+            await booru.get("https://example.test/image/1.jpg")
+
+        self.assertTrue(booru._proxy_cooldown.is_available(initial_proxy))
+        self.assertFalse(booru._proxy_cooldown.is_available(redirected_proxy))
 
     async def test_disabled_cooldown_statuses_do_not_poison_proxy(self):
         booru = Booru(

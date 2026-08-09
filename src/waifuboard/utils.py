@@ -15,6 +15,7 @@ from .proxy import (
     format_proxy_key,
     format_proxy_log,
     redact_proxy_url,
+    resolve_outcome_proxy,
     resolve_proxy,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "logger",
     "normalize_filepath",
     "redact_proxy_url",
+    "resolve_outcome_proxy",
     "resolve_proxy",
 ]
