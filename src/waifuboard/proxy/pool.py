@@ -32,7 +32,7 @@ _EnvironmentProxySnapshots: TypeAlias = tuple[_EnvironmentProxySnapshot, ...]
 
 # prepared cache 的一项代表一整份代理配置快照，而不是池中的单个 proxy；16 项可容纳常见的一个全局池与少量地域性 request override，并为临时配置留出余量
 # 每项同时持有内容化 cache key 与规范化代理池，大型配置可能包含数千个 mapping，因此不能按 niquests.proxy_manager 那种“一项只对应一个实际 proxy”的无界缓存处理
-# 该上限只约束跨客户端共享的 LRU；仍被 Booru 实例作为全局配置或最近一次 request override 引用的 prepared pool 属于活跃状态，不会因共享 LRU 淘汰而失效
+# 该上限只约束跨客户端共享查找：LRU 淘汰会删除 cache 对 prepared pool 的引用，但 Booru 实例还保存着自己的强引用，因此已在使用的 pool 对象及其后续请求不会失效；只有未来再次按同一配置查找时可能需要重建
 PREPARED_PROXY_CACHE_SIZE = 16
 # niquests.proxy_manager 的每个 cache value 只对应一个实际使用过的 proxy，而这里每个 route value 都包含整份代理池的解析结果，不能按 niquests 的无界字典处理
 # functools.lru_cache 装饰的是类方法函数，因此 32 项由所有 PreparedProxyPool 实例共同使用，cache key 包含“PreparedProxyPool 实例 + scheme/authority + 环境代理快照”，并会在对应 route 淘汰前保持该 pool 存活
@@ -169,6 +169,21 @@ def resolve_proxy(
     return ProxyResolution(key=proxy, log=redact_proxy_url(proxy))
 
 
+def _finalize_proxy_resolution(resolution: ProxyResolution) -> ProxyResolution:
+    """Convert a fully resolved no-proxy route into an explicit direct identity.
+
+    Args:
+        resolution (ProxyResolution): Proxy result after request, session, and environment policies have been applied.
+
+    Returns:
+        ProxyResolution: Original proxy identity, or the explicit direct sentinel when no proxy matched.
+    """
+    if resolution.key is None:
+        # resolve_proxy 的 None 在合并环境代理前仍表示“尚未解析”；只有调用方确认全部代理来源都已合并后，才能把它收敛成真实的 direct 路由
+        return ProxyResolution(key=DIRECT_PROXY_KEY, log=DIRECT_PROXY_KEY)
+    return resolution
+
+
 def _proxy_route_url(url: str, base_url: str | None) -> str:
     """Return the URL portion that can affect niquests proxy routing.
 
@@ -268,7 +283,9 @@ class PreparedProxyPool:
             # 显式空 tuple 没有候选，但 niquests 在 trust_env=True 时仍会把空 request mapping 与环境代理合并；构造一个虚拟候选才能让实际连接、日志和 cooldown 保持一致
             effective_proxies = environment_by_no_proxy[None]
             if effective_proxies:
-                resolution = resolve_proxy(route_url, effective_proxies)
+                resolution = _finalize_proxy_resolution(
+                    resolve_proxy(route_url, effective_proxies)
+                )
                 return (
                     _ProxyCandidate(
                         index=0,
@@ -290,7 +307,10 @@ class PreparedProxyPool:
                 }
             else:
                 effective_proxies = proxies
-            resolution = resolve_proxy(route_url, effective_proxies)
+            # environment snapshot 已在上方合并完成；此处仍未命中代理就代表 niquests 会直连，提前保存 direct 可让 INFO/retry/cooldown 日志使用同一身份
+            resolution = _finalize_proxy_resolution(
+                resolve_proxy(route_url, effective_proxies)
+            )
             resolved_candidates.append(
                 _ProxyCandidate(
                     index=index,
@@ -450,6 +470,9 @@ def resolve_outcome_proxy(
             effective_proxies.setdefault(scheme, environment_proxy)
             resolution = resolve_proxy(request_url, effective_proxies)
 
+    # redirect route 的 request mapping 与可选环境代理均已处理完毕；剩余的 unresolved 状态就是最终直连，而不是未知代理
+    resolution = _finalize_proxy_resolution(resolution)
+
     return ProxySelection(
         proxies=effective_proxies.copy(),
         key=resolution.key,
@@ -495,7 +518,11 @@ class ProxySelector:
 
         if not self._candidates:
             # 空 tuple 表示没有配置可轮换代理，因此按直连处理，并避免把空池传给 random.choice 触发 IndexError
-            return ProxySelection(proxies={}, key=None, log=None)
+            return ProxySelection(
+                proxies={},
+                key=DIRECT_PROXY_KEY,
+                log=DIRECT_PROXY_KEY,
+            )
 
         if not self._tracker.enabled:
             # cooldown 默认关闭时无需扫描整个代理池；成功请求只做一次 O(1) random.choice，外层 retry 才按已用索引查找下一个候选
@@ -509,6 +536,10 @@ class ProxySelector:
             )
             remaining_by_key = self._tracker.remaining_many(trackable_keys)
             available_candidates: list[_ProxyCandidate] = []
+            # DEBUG 关闭时不创建冷却候选临时列表；warning 等待只需要最短剩余时间，正常 INFO/WARNING 热路径不会为逐代理 skip 日志付出额外分配
+            cooling_candidates: list[tuple[ProxySelection, float]] | None = (
+                [] if logger.isEnabledFor(logging.DEBUG) else None
+            )
 
             for candidate in self._candidates:
                 selection = candidate.selection
@@ -517,10 +548,19 @@ class ProxySelector:
                     available_candidates.append(candidate)
                     continue
 
-                if logger.isEnabledFor(logging.DEBUG):
+                if cooling_candidates is not None:
+                    cooling_candidates.append((selection, remaining))
+
+            if cooling_candidates:
+                # 先完成整池扫描再打印 skip，确保每条日志中的 available 都是同一时刻的最终池余量，而不是扫描到当前位置的中间计数
+                availability_log = self._format_availability(
+                    len(available_candidates),
+                    len(self._candidates),
+                )
+                for selection, remaining in cooling_candidates:
                     logger.debug(
                         f"proxy.skip proxy={selection.log} reason=cooldown "
-                        f"remaining={format_elapsed(remaining)}"
+                        f"remaining={format_elapsed(remaining)} {availability_log}"
                     )
 
             if available_candidates:
@@ -539,9 +579,11 @@ class ProxySelector:
                 return self._copy_selection(selected.selection)
 
             wait_seconds = min(remaining_by_key.values(), default=0.0)
+            availability_log = self._format_availability(0, len(self._candidates))
             logger.warning(
                 "All proxies are cooling down; waiting "
-                f"{format_elapsed(wait_seconds)} before retrying proxy selection."
+                f"{format_elapsed(wait_seconds)} before retrying proxy selection "
+                f"({availability_log})"
             )
             # 所有候选均在 cooldown 时等待最早恢复项；该等待发生在 HTTP 请求前，因此不消耗 tenacity attempt 或 HTTP timeout
             await asyncio.sleep(wait_seconds)
@@ -591,12 +633,83 @@ class ProxySelector:
                 break
             logger.warning(
                 f"Proxy {selection.log} is cooling down; waiting "
-                f"{format_elapsed(remaining)} before retrying proxy selection."
+                f"{format_elapsed(remaining)} before retrying proxy selection "
+                f"({self._format_availability(0, 1)})"
             )
             # 单代理没有替代候选，只能等待 cooldown 到期；若在此直接失败，调用方会在已配置代理仍可恢复的情况下提前收到异常
             await asyncio.sleep(remaining)
 
         return self._copy_selection(selection)
+
+    def record_outcome(
+        self,
+        selection: ProxySelection,
+        *,
+        failed: bool,
+    ) -> None:
+        """Record one selected proxy outcome and log a new cooldown window.
+
+        Args:
+            selection (ProxySelection): Proxy metadata associated with the completed attempt.
+            failed (bool): Whether the attempt counts as a proxy-health failure.
+
+        Returns:
+            None: The shared tracker and logger are updated in place.
+        """
+        # selection.key 保留凭据用于区分代理身份，selection.log 只用于日志；任何日志调用都不能使用未脱敏 key
+        cooled_down = self._tracker.record(selection.key, failed=failed)
+        if cooled_down:
+            # cooldown 由同一 proxy 跨多次请求累计触发，因此不关联单个 method/URL；余量只描述当前 selector 的候选池，避免混入 tracker 中其他配置的历史代理
+            logger.warning(
+                f"proxy.cooldown proxy={selection.log} "
+                f"failures={self._tracker.threshold} "
+                f"cooldown={format_elapsed(self._tracker.cooldown_seconds)} "
+                f"{self.availability_log()}"
+            )
+
+    def availability(self) -> tuple[int, int]:
+        """Return selectable and total candidate-slot counts for this request.
+
+        Returns:
+            tuple[int, int]: Available candidate slots followed by total candidate slots; duplicate proxies remain separate weighting slots.
+        """
+        total = len(self._candidates)
+        if not self._tracker.enabled:
+            return total, total
+
+        # remaining_many 对重复 identity 只查询一次时钟与 tracker 状态，随后仍按候选槽位计数，保留 tuple 中重复项表达的随机权重
+        trackable_keys = (
+            cast(str, candidate.selection.key)
+            for candidate in self._candidates
+            if candidate.selection.key not in (None, DIRECT_PROXY_KEY)
+        )
+        remaining_by_key = self._tracker.remaining_many(trackable_keys)
+        available = sum(
+            remaining_by_key.get(candidate.selection.key or "", 0.0) <= 0
+            for candidate in self._candidates
+        )
+        return available, total
+
+    def availability_log(self) -> str:
+        """Format current candidate availability for lifecycle logs.
+
+        Returns:
+            str: Compact ``available=n/total`` snapshot for this request's proxy route.
+        """
+        return self._format_availability(*self.availability())
+
+    @staticmethod
+    def _format_availability(available: int, total: int) -> str:
+        """Format one proxy candidate availability snapshot.
+
+        Args:
+            available (int): Candidate slots not currently cooling down.
+            total (int): Total candidate slots in the current request route.
+
+        Returns:
+            str: Compact availability field suitable for logs.
+        """
+        return f"available={available}/{total}"
 
     @staticmethod
     def _copy_selection(selection: ProxySelection) -> ProxySelection:

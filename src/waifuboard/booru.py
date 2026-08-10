@@ -86,7 +86,6 @@ from .utils import (
     logger,
     format_response_metrics,
     format_retry_log,
-    format_elapsed,
     get_body_size,
     is_immutable_proxy_pool,
     before_sleep_log,
@@ -412,30 +411,6 @@ class Booru:
         self.client.base_url = url
         logger.info(f"{self.__class__.__name__} base url set to: {url}")
 
-    def _record_proxy_outcome(
-        self,
-        selection: ProxySelection,
-        *,
-        failed: bool,
-    ) -> None:
-        """Record one proxy outcome and log when it starts a cooldown window.
-
-        Args:
-            selection (ProxySelection): Proxy metadata associated with the completed attempt.
-            failed (bool): Whether the attempt counts as a proxy-health failure.
-
-        Returns:
-            None: The shared cooldown tracker and logger are updated in place.
-        """
-        # selection.key 保留凭据用于区分代理身份，selection.log 只用于日志；任何日志调用都不能使用未脱敏 key
-        cooled_down = self._proxy_cooldown.record(selection.key, failed=failed)
-        if cooled_down:
-            logger.warning(
-                f"proxy.cooldown proxy={selection.log} "
-                f"failures={self._proxy_cooldown.threshold} "
-                f"cooldown={format_elapsed(self._proxy_cooldown.cooldown_seconds)}"
-            )
-
     async def request(
         self,
         method: str,
@@ -654,7 +629,10 @@ class Booru:
                             trust_env=trust_env,
                         )
                     # transport、adapter、gather 或 hook 抛出的异常都表示当前代理未完成请求；先记入健康状态，再交给 tenacity 决定是否还有外层预算
-                    self._record_proxy_outcome(proxy_selection, failed=True)
+                    proxy_selector.record_outcome(
+                        proxy_selection,
+                        failed=True,
+                    )
                     raise
 
                 status_code = getattr(response, "status_code", None)
@@ -683,7 +661,10 @@ class Booru:
                     and not is_expected_status
                 )
                 # 命中 expected_statuses 表示调用方接受该响应作为终态业务结果，不应污染代理健康；其他状态只有显式列入 cooldown policy 才累计失败
-                self._record_proxy_outcome(proxy_selection, failed=failed_status)
+                proxy_selector.record_outcome(
+                    proxy_selection,
+                    failed=failed_status,
+                )
 
                 # 非最后一次 attempt 对 unexpected 4xx/5xx 调用 raise_for_status，使 niquests status_forcelist 之外的错误也能消耗外层 retry 并更换代理；最后一次则返回响应供调用方自行检查，不在封装层强制抛异常
                 if (
