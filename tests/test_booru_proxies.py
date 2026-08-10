@@ -427,8 +427,8 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         ).select()
 
         self.assertEqual(selection.proxies, {})
-        self.assertIsNone(selection.key)
-        self.assertIsNone(selection.log)
+        self.assertEqual(selection.key, "direct")
+        self.assertEqual(selection.log, "direct")
 
     async def test_disabled_cooldown_skips_pool_health_scan(self):
         tracker = ProxyCooldownTracker()
@@ -475,6 +475,25 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         clock.assert_called_once_with()
+
+    def test_proxy_availability_counts_current_candidate_slots(self):
+        proxies = tuple(
+            f"http://proxy-{index}.test:8080" for index in range(1000)
+        )
+        tracker = ProxyCooldownTracker(
+            threshold=1,
+            cooldown_seconds=60,
+        )
+        for proxy in proxies[:3]:
+            tracker.record(proxy, failed=True)
+
+        selector = prepare_proxy_pool(proxies).selector(
+            url="https://example.test/data.json",
+            tracker=tracker,
+        )
+
+        self.assertEqual(selector.availability(), (997, 1000))
+        self.assertEqual(selector.availability_log(), "available=997/1000")
 
     def test_format_bytes_uses_human_readable_units(self):
         self.assertEqual(format_bytes(512), "512 B")
@@ -603,6 +622,41 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(message, r"elapsed=\d+\.\d{3}s")
         self.assertIn("bytes=1.5 KB", message)
         self.assertIn("redirects=0", message)
+
+    async def test_direct_retry_log_keeps_proxy_context_aligned_with_info_log(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.INFO,
+            trust_env=False,
+            max_attempt_number=2,
+        )
+        client = CapturingClient(
+            [
+                DummyResponse(503, "Service Unavailable"),
+                DummyResponse(200, "OK"),
+            ]
+        )
+        booru.client = client
+
+        with patch("waifuboard.booru.asyncio.sleep"):
+            with self.assertLogs("WaifuBoard", level="INFO") as records:
+                response = await booru.get("https://example.test/direct.json")
+
+        self.assertEqual(response.status_code, 200)
+        retry_log = next(
+            record for record in records.output if " retry in " in record
+        )
+        response_log = next(
+            record for record in records.output if " elapsed=" in record
+        )
+        self.assertIn(
+            "GET https://example.test/direct.json retry in",
+            retry_log,
+        )
+        self.assertIn("via direct", retry_log)
+        self.assertIn("attempt=2/2", retry_log)
+        self.assertIn("via direct", response_log)
+        self.assertIn("attempt=2/2", response_log)
 
     async def test_disabled_info_logging_skips_response_metric_work(self):
         booru = Booru(
@@ -974,7 +1028,14 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
                 await booru.get("https://example.test/rate-limited.json")
                 await booru.get("https://example.test/recovered.json")
 
-        self.assertTrue(any("proxy.cooldown" in record for record in records.output))
+        cooldown_log = next(
+            record for record in records.output if "proxy.cooldown" in record
+        )
+        self.assertIn("proxy=http://proxy-a.test:8080", cooldown_log)
+        self.assertIn("available=1/2", cooldown_log)
+        skip_log = next(record for record in records.output if "proxy.skip" in record)
+        self.assertIn("proxy=http://proxy-a.test:8080", skip_log)
+        self.assertIn("available=1/2", skip_log)
         self.assertEqual(
             client.request_history[0]["proxies"],
             {"http": "http://proxy-a.test:8080", "https": "http://proxy-a.test:8080"},
@@ -1027,9 +1088,12 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
                     await booru.get("https://example.test/c.json")
 
         sleep.assert_awaited_once_with(60.0)
-        self.assertTrue(
-            any("All proxies are cooling down" in record for record in records.output)
+        wait_log = next(
+            record
+            for record in records.output
+            if "All proxies are cooling down" in record
         )
+        self.assertIn("available=0/2", wait_log)
         self.assertEqual(client.request_count, 3)
 
     async def test_single_proxy_waits_for_cooldown_before_reuse(self):
@@ -1056,7 +1120,16 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         )
         booru.client = client
 
-        await booru.get("https://example.test/rate-limited.json")
+        with self.assertLogs("WaifuBoard", level="WARNING") as cooldown_records:
+            await booru.get("https://example.test/rate-limited.json")
+
+        cooldown_log = next(
+            record
+            for record in cooldown_records.output
+            if "proxy.cooldown" in record
+        )
+        self.assertIn("proxy=http://proxy.test:8080", cooldown_log)
+        self.assertIn("available=0/1", cooldown_log)
 
         async def advance_clock(seconds):
             now[0] += seconds
@@ -1070,7 +1143,11 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         sleep.assert_awaited_once_with(60.0)
-        self.assertTrue(any("is cooling down" in record for record in records.output))
+        wait_log = next(
+            record for record in records.output if "is cooling down" in record
+        )
+        self.assertIn("Proxy http://proxy.test:8080", wait_log)
+        self.assertIn("available=0/1", wait_log)
         self.assertEqual(
             client.request_history[1]["proxies"],
             {"http": "http://proxy.test:8080", "https": "http://proxy.test:8080"},
