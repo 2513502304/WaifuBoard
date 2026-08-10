@@ -641,6 +641,32 @@ class ProxySelector:
 
         return self._copy_selection(selection)
 
+    def record_outcome(
+        self,
+        selection: ProxySelection,
+        *,
+        failed: bool,
+    ) -> None:
+        """Record one selected proxy outcome and log a new cooldown window.
+
+        Args:
+            selection (ProxySelection): Proxy metadata associated with the completed attempt.
+            failed (bool): Whether the attempt counts as a proxy-health failure.
+
+        Returns:
+            None: The shared tracker and logger are updated in place.
+        """
+        # selection.key 保留凭据用于区分代理身份，selection.log 只用于日志；任何日志调用都不能使用未脱敏 key
+        cooled_down = self._tracker.record(selection.key, failed=failed)
+        if cooled_down:
+            # cooldown 由同一 proxy 跨多次请求累计触发，因此不关联单个 method/URL；余量只描述当前 selector 的候选池，避免混入 tracker 中其他配置的历史代理
+            logger.warning(
+                f"proxy.cooldown proxy={selection.log} "
+                f"failures={self._tracker.threshold} "
+                f"cooldown={format_elapsed(self._tracker.cooldown_seconds)} "
+                f"{self.availability_log()}"
+            )
+
     def availability(self) -> tuple[int, int]:
         """Return selectable and total candidate-slot counts for this request.
 
