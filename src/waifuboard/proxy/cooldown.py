@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 
 from niquests.exceptions import (
     ChunkedEncodingError,
-    ConnectionError,
+    ConnectionError as NiquestsConnectionError,
     ContentDecodingError,
     MultiplexingError,
     RequestException,
@@ -18,7 +18,7 @@ DIRECT_PROXY_KEY = "direct"
 
 _PROXY_TRANSPORT_EXCEPTIONS = (
     ChunkedEncodingError,
-    ConnectionError,
+    NiquestsConnectionError,
     ContentDecodingError,
     MultiplexingError,
     RetryError,
