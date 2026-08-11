@@ -1,6 +1,10 @@
 """Proxy configuration, selection, and cooldown helpers."""
 
-from .cooldown import DIRECT_PROXY_KEY, ProxyCooldownTracker
+from .cooldown import (
+    DIRECT_PROXY_KEY,
+    ProxyCooldownTracker,
+    is_proxy_transport_exception,
+)
 from .pool import (
     PREPARED_PROXY_CACHE_SIZE,
     PreparedProxyPool,
@@ -28,6 +32,7 @@ __all__ = [
     "format_proxy_key",
     "format_proxy_log",
     "is_immutable_proxy_pool",
+    "is_proxy_transport_exception",
     "normalize_proxy",
     "prepare_proxy_pool",
     "redact_proxy_url",

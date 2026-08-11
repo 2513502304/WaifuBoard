@@ -3,14 +3,19 @@ import unittest
 from unittest.mock import Mock, patch
 from typing import Any, cast, get_args
 
+from niquests import Request
+from niquests._vendor.kiss_headers import Header, Headers
 from niquests.exceptions import HTTPError
 from niquests.exceptions import RequestException
+from pydantic import BaseModel
 
 from waifuboard.booru import Booru, BodyFormValueType, QueryParameterScalarType
 from waifuboard.observability import format_bytes, format_request_error
 from waifuboard.proxy import (
     PREPARED_PROXY_CACHE_SIZE,
     ProxyCooldownTracker,
+    ProxyResolution,
+    ProxySelection,
     PreparedProxyPool,
     format_proxy_key,
     normalize_proxy,
@@ -447,6 +452,49 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
             await selector.select()
 
         remaining_many.assert_not_called()
+
+    async def test_enabled_cooldown_without_active_windows_skips_pool_health_scan(self):
+        tracker = ProxyCooldownTracker(threshold=3, cooldown_seconds=60)
+        selector = prepare_proxy_pool(
+            tuple(f"http://proxy-{index}.test:8080" for index in range(100))
+        ).selector(
+            url="https://example.test/data.json",
+            tracker=tracker,
+        )
+
+        with patch.object(
+            tracker,
+            "remaining_many",
+            wraps=tracker.remaining_many,
+        ) as remaining_many:
+            await selector.select()
+
+        remaining_many.assert_not_called()
+
+    async def test_explicit_direct_pool_does_not_read_environment_proxies(self):
+        with patch("waifuboard.proxy.pool.getproxies") as getproxies:
+            selection = await prepare_proxy_pool({"no_proxy": "*"}).selector(
+                url="https://example.test/data.json",
+                tracker=ProxyCooldownTracker(),
+                trust_env=True,
+            ).select()
+
+        getproxies.assert_not_called()
+        self.assertEqual(selection.key, "direct")
+
+    def test_instance_empty_tuple_preserves_empty_pool_semantics(self):
+        booru = Booru(
+            proxies=(),
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+        )
+        selector = booru._prepared_proxy_pool.selector(
+            url="https://example.test/data.json",
+            tracker=booru._proxy_cooldown,
+        )
+
+        self.assertEqual(selector.availability(), (0, 0))
 
     def test_cooldown_pool_scan_reads_clock_once(self):
         clock = Mock(return_value=0.0)
@@ -931,6 +979,27 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(booru._proxy_cooldown.is_available(initial_proxy))
         self.assertFalse(booru._proxy_cooldown.is_available(redirected_proxy))
 
+    async def test_application_exception_does_not_change_proxy_health(self):
+        proxy = "http://proxy.test:8080"
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.CRITICAL,
+            trust_env=False,
+            max_attempt_number=1,
+            proxies=proxy,
+            proxy_cooldown_threshold=2,
+            proxy_cooldown_seconds=60,
+        )
+        booru.client = CapturingClient(ValueError("request hook failed"))
+        self.assertFalse(booru._proxy_cooldown.record(proxy, failed=True))
+
+        with self.assertRaisesRegex(ValueError, "request hook failed"):
+            await booru.get("https://example.test/data.json")
+
+        # 应用层异常既不新增失败，也不应按成功处理并清空前一个 transport failure；下一次真实失败仍应达到 threshold
+        self.assertTrue(booru._proxy_cooldown.record(proxy, failed=True))
+        self.assertFalse(booru._proxy_cooldown.is_available(proxy))
+
     async def test_disabled_cooldown_statuses_do_not_poison_proxy(self):
         booru = Booru(
             default_headers=False,
@@ -1163,20 +1232,110 @@ class BooruProxyTests(unittest.IsolatedAsyncioTestCase):
         client = CapturingClient()
         booru.client = client
 
-        await booru.get(
-            "https://example.test/data.json?existing=1",
-            params={"page": 2, "exact": True, "payload": {"rating": "safe"}},
-        )
+        url = "https://example.test/data.json?existing=1"
+        params = {"page": 2, "exact": True, "payload": {"rating": "safe"}}
+        await booru.get(url, params=params)
 
         self.assertEqual(
             client.request_kwargs["params"],
             {
-                "existing": ["1"],
                 "page": 2,
                 "exact": True,
                 "payload": '{"rating":"safe"}',
             },
         )
+        self.assertEqual(
+            Request("GET", url, params=client.request_kwargs["params"]).prepare().url,
+            "https://example.test/data.json?existing=1&page=2&exact=True&payload=%7B%22rating%22%3A%22safe%22%7D",
+        )
+        self.assertEqual(
+            params,
+            {"page": 2, "exact": True, "payload": {"rating": "safe"}},
+        )
+
+    async def test_request_preserves_params_when_no_nested_dict_requires_encoding(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        client = CapturingClient()
+        booru.client = client
+        params = {"page": 2, "exact": True}
+
+        await booru.get("https://example.test/data.json", params=params)
+
+        self.assertIs(client.request_kwargs["params"], params)
+
+    def test_instance_params_encode_nested_dict_without_mutating_caller(self):
+        params = {"page": 2, "payload": {"rating": "safe"}}
+
+        booru = Booru(
+            params=params,
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+        )
+
+        self.assertEqual(
+            booru.client.params,
+            {"page": 2, "payload": '{"rating":"safe"}'},
+        )
+        self.assertEqual(params, {"page": 2, "payload": {"rating": "safe"}})
+
+    async def test_request_keeps_none_params_without_allocating_empty_mapping(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        client = CapturingClient()
+        booru.client = client
+
+        await booru.get("https://example.test/data.json")
+
+        self.assertIsNone(client.request_kwargs["params"])
+
+    async def test_request_header_shortcuts_preserve_supported_container_semantics(self):
+        booru = Booru(
+            default_headers=False,
+            logger_level=logging.WARNING,
+            trust_env=False,
+            max_attempt_number=1,
+        )
+        client = CapturingClient([DummyResponse(), DummyResponse()])
+        booru.client = client
+        list_headers = [("X-Trace", "one"), ("Referer", "old")]
+        object_headers = Headers(Header("X-Trace", "two"))
+
+        await booru.get(
+            "https://example.test/list.json",
+            headers=list_headers,
+            referer="https://example.test/posts/1",
+        )
+        await booru.get(
+            "https://example.test/object.json",
+            headers=object_headers,
+            accept_encoding="br",
+        )
+
+        first_headers = client.request_history[0]["headers"]
+        second_headers = client.request_history[1]["headers"]
+        self.assertEqual(
+            first_headers,
+            [("X-Trace", "one"), ("Referer", "https://example.test/posts/1")],
+        )
+        self.assertEqual(second_headers["X-Trace"], "two")
+        self.assertEqual(second_headers["Accept-Encoding"], "br")
+        self.assertEqual(list_headers, [("X-Trace", "one"), ("Referer", "old")])
+        self.assertEqual(object_headers.to_dict()["X-Trace"], "two")
+
+    def test_proxy_value_models_use_pydantic(self):
+        self.assertTrue(issubclass(ProxyResolution, BaseModel))
+        self.assertTrue(issubclass(ProxySelection, BaseModel))
+        self.assertTrue(issubclass(ProxySelection, ProxyResolution))
 
     def test_public_request_value_types_include_niquests_numeric_scalars(self):
         self.assertGreaterEqual(
