@@ -12,7 +12,6 @@ from typing import (
     Literal,
     IO,
     TypeAlias,
-    cast,
 )
 from collections.abc import (
     Callable,
@@ -22,7 +21,7 @@ from collections.abc import (
     AsyncIterable,
     Mapping,
 )
-from urllib.parse import urlparse, parse_qs, parse_qsl, quote, unquote
+from urllib.parse import unquote
 from urllib.request import getproxies
 
 import aiofiles
@@ -68,7 +67,8 @@ from niquests.hooks import (
     AsyncTokenBucketLimiter,
 )
 from niquests.exceptions import JSONDecodeError, RequestException
-from tenacity import AsyncRetrying, RetryCallState, RetryError, TryAgain, retry
+from niquests._vendor.kiss_headers import Headers as KissHeaders
+from tenacity import AsyncRetrying, RetryCallState
 from tenacity.after import after_log
 from tenacity.before import before_log
 # from tenacity.before_sleep import before_sleep_log
@@ -88,6 +88,7 @@ from .utils import (
     format_retry_log,
     get_body_size,
     is_immutable_proxy_pool,
+    is_proxy_transport_exception,
     before_sleep_log,
     normalize_filepath,
     prepare_proxy_pool,
@@ -152,6 +153,86 @@ __all__ = [
 
 
 DEFAULT_PROXY_COOLDOWN_STATUSES = frozenset({429, 502, 503, 504})
+# request-level proxies=None 始终表示显式直连；该配置不可变且与 URL 无关，模块加载时预构建可移除每次调用的 dict 分配、内容 key 生成和共享 LRU 查询
+_DIRECT_REQUEST_PROXY_POOL = prepare_proxy_pool({"no_proxy": "*"})
+
+
+def _prepare_request_headers(
+    headers: HeadersType | None,
+    *,
+    accept_encoding: str | None,
+    referer: str | None,
+) -> HeadersType | None:
+    """Apply shortcut headers without mutating the caller's container.
+
+    Args:
+        headers (HeadersType | None): Original niquests-compatible header container.
+        accept_encoding (str | None): Optional Accept-Encoding override.
+        referer (str | None): Optional Referer override.
+
+    Returns:
+        HeadersType | None: Original container when no override is needed, otherwise an isolated container with overrides applied.
+    """
+    if accept_encoding is None and referer is None:
+        # 没有 shortcut 时直接透传，避免每个 request 为不会修改的 headers 支付复制成本
+        return headers
+
+    overrides: dict[str, str] = {}
+    if accept_encoding is not None:
+        overrides["Accept-Encoding"] = accept_encoding
+    if referer is not None:
+        overrides["Referer"] = referer
+
+    if headers is None:
+        return overrides
+
+    if isinstance(headers, list):
+        # list-of-tuples 可能包含重复 header；只移除 shortcut 明确覆盖的同名项，其余顺序和重复值保持不变
+        override_names = {name.casefold() for name in overrides}
+        prepared_headers = [
+            (name, value)
+            for name, value in headers
+            if (
+                name.decode("latin-1") if isinstance(name, bytes) else name
+            ).casefold()
+            not in override_names
+        ]
+        prepared_headers.extend(overrides.items())
+        return prepared_headers
+
+    if isinstance(headers, KissHeaders):
+        # kiss-headers.Headers 的迭代值是 Header 对象，不能直接 dict(headers)；to_dict 才会得到 niquests 接受的字符串 mapping
+        prepared_mapping: dict[str | bytes, str | bytes] = dict(headers.to_dict())
+    else:
+        # HeadersType 的其余非 list 分支都是 mutable mapping；统一构造普通 dict 可兼容没有 .copy() 方法的自定义 MutableMapping
+        prepared_mapping = dict(headers)
+    prepared_mapping.update(overrides)
+    return prepared_mapping
+
+
+def _prepare_query_params(
+    params: QueryParameterType | None,
+) -> QueryParameterType | None:
+    """Encode WaifuBoard's nested-dict query extension without mutating callers.
+
+    Args:
+        params (QueryParameterType | None): Query mapping accepted by the WaifuBoard request interface.
+
+    Returns:
+        QueryParameterType | None: Original mapping when no nested dict is present, otherwise an isolated mapping whose nested dict values are compact JSON strings.
+    """
+    if params is None:
+        return None
+
+    encoded_params: dict[str, QueryParameterValueType] | None = None
+    for key, value in params.items():
+        if not isinstance(value, dict):
+            continue
+        if encoded_params is None:
+            # 普通 scalar/list 参数直接透传；只有发现 WaifuBoard 扩展的 nested dict 时才复制，兼顾调用方数据隔离和高频 request 热路径
+            encoded_params = dict(params)
+        encoded_params[key] = orjson.dumps(value).decode("utf-8")
+    return params if encoded_params is None else encoded_params
 
 
 class Booru:
@@ -257,6 +338,9 @@ class Booru:
                 "Connection": "keep-alive",
             }
 
+        # 实例级 params 与 request-level params 使用同一 nested-dict 扩展，否则 session 默认参数会被 niquests 当作普通 mapping 迭代并编码成错误值
+        params = _prepare_query_params(params)
+
         if cookies is not None:
             if isinstance(cookies, dict):
                 cookies = cookiejar_from_dict(cookies, thread_free=True)
@@ -349,7 +433,9 @@ class Booru:
         self._proxies: ProxiesType | None = proxies
         # 实例级代理配置通常会被每个 request 复用；初始化时建立不可变 prepared pool，避免高频请求重复 normalize 整个代理池
         # selector 的已尝试索引不保存在 prepared pool 中，每个逻辑请求仍会创建独立状态，因此并发请求不会互相消耗代理候选
-        self._prepared_proxy_pool = prepare_proxy_pool(proxies or {})
+        self._prepared_proxy_pool = prepare_proxy_pool(
+            {} if proxies is None else proxies
+        )
         # str 与 tuple[str] 不可能原地变化，可在 request 热路径直接 O(1) 复用；dict 或 tuple[dict] 仍需按内容重新取 cache，以保留调用方构造后修改 mapping 的既有行为
         self._proxy_config_is_immutable = is_immutable_proxy_pool(proxies)
         # 大型 request override 即使命中全局 prepared LRU，也需要 O(pool_size) 生成内容 key；保留最近一次不可变对象可让同一调用点连续复用时按 identity O(1) 命中
@@ -390,6 +476,21 @@ class Booru:
         """
         self.client.auth = auth
         logger.info(f"{self.__class__.__name__} auth set to: {auth}")
+
+    def _resolve_max_attempt_number(self, max_attempt_number: int | None) -> int:
+        """Resolve a request-level retry budget against the instance default.
+
+        Args:
+            max_attempt_number (int | None): Request-level override, or None to inherit the instance setting.
+
+        Returns:
+            int: Effective attempt count, clamped to at least one attempt.
+        """
+        if max_attempt_number is None:
+            max_attempt_number = self._max_attempt_number
+        if max_attempt_number is None:
+            return 1
+        return max(max_attempt_number, 1)
 
     @property
     def base_url(self):
@@ -463,28 +564,14 @@ class Booru:
         Returns:
             Response: Response object.
         """
-        if accept_encoding or referer:
-            # request shortcut 需要修改 headers 时先复制，既避免污染调用方在并发请求间复用的 mapping，也避免没有 shortcut 时创建无用空 dict
-            headers = dict(headers or {})
-            if accept_encoding:
-                headers["Accept-Encoding"] = accept_encoding
-            if referer:
-                headers["Referer"] = referer
+        headers = _prepare_request_headers(
+            headers,
+            accept_encoding=accept_encoding,
+            referer=referer,
+        )
 
-        #!Fix httpx issue [当 URL 包含请求参数且设置了 params 参数时，URL 中的请求参数会意外消失](https://github.com/encode/httpx/issues/3621)
-        #!这里保留该操作仅为为了兼容 httpx
-        if params is None:
-            params = {}
-        else:
-            # 只有显式 params 才需要解析 URL query；普通下载请求保留完整 URL 交给 niquests，跳过无用 urlparse
-            parsed_url = urlparse(url)
-            params = parse_qs(parsed_url.query) | dict(
-                params
-            )  # 获取 URL 中的请求参数，并将其与 params 参数合并
-        #!requests/httpx 无法*正确处理* dict 类型的请求参数，需要将其转换为 JSON 字符串
-        for key, value in params.items():
-            if isinstance(value, dict):
-                params[key] = orjson.dumps(value).decode("utf-8")
+        # niquests 会自行保留 URL 原有 query 并追加 params；这里只处理 WaifuBoard 额外支持的 nested dict，不再手工合并 URL query，避免同名参数重复
+        params = _prepare_query_params(params)
 
         # UNSET: 未传入，直接复用 Booru 初始化时预构建的代理池；若实例配置是 tuple，每个 request 仍有独立 selector 跳过 cooldown 并轮换未尝试候选
         # None : 显式禁用，request-level no_proxy="*" 压过 env，且避免 niquests 空代理 URL 触发 KeyError
@@ -494,10 +581,12 @@ class Booru:
                 prepared_proxy_pool = self._prepared_proxy_pool
             else:
                 # 可变全局 mapping 每次按当前内容查询 LRU；未变化时只产生轻量 hash key，变化时则得到新的 prepared snapshot，避免长期使用陈旧代理
-                prepared_proxy_pool = prepare_proxy_pool(self._proxies or {})
+                prepared_proxy_pool = prepare_proxy_pool(
+                    {} if self._proxies is None else self._proxies
+                )
         elif proxies is None:
             # niquests.utils 中的 select_proxy 对该值返回 None 并赋值给实际使用的 proxy，因此将会走 proxy is None 的分支，不会进入 self.proxy_manager[proxy] 筛选 proxy 的分支
-            prepared_proxy_pool = prepare_proxy_pool({"no_proxy": "*"})
+            prepared_proxy_pool = _DIRECT_REQUEST_PROXY_POOL
         else:
             request_proxy_pool_cache = self._request_proxy_pool_cache
             if (
@@ -522,12 +611,8 @@ class Booru:
             trust_env=trust_env,
         )
 
-        # 两态级联：未传则继承 Booru 实例配置，仍未配置则回落到单次尝试
-        if max_attempt_number is None:
-            max_attempt_number = self._max_attempt_number
-        if max_attempt_number is None:
-            max_attempt_number = 1
-        max_attempt_number = max(max_attempt_number, 1)
+        # request 与内容级 helper 统一通过同一入口解析重试预算，避免 None、0 和实例默认值在不同调用路径产生不一致行为
+        max_attempt_number = self._resolve_max_attempt_number(max_attempt_number)
 
         # expected_statuses 只用于“响应本身就是终态业务结果”的状态码；niquests 返回命中响应后，Booru 不再进行外层 retry、代理轮换或代理健康失败计数
         # 若站点把 404 等错误码临时用作限流信号，则不能列入这里，否则会把本可通过后续 attempt 恢复的失败误判为终态并提前返回；需要影响代理健康时还应把该状态加入实例级 proxy_cooldown_statuses
@@ -628,11 +713,12 @@ class Booru:
                             failed_request_url,
                             trust_env=trust_env,
                         )
-                    # transport、adapter、gather 或 hook 抛出的异常都表示当前代理未完成请求；先记入健康状态，再交给 tenacity 决定是否还有外层预算
-                    proxy_selector.record_outcome(
-                        proxy_selection,
-                        failed=True,
-                    )
+                    # 外层 Tenacity 仍兜住所有 Python-level exception，但只有连接、超时、正文传输等 niquests transport failure 才能作为代理不健康的证据；用户 hook/输入错误既不能 poison 代理池，也不能冒充成功请求重置既有失败 streak
+                    if is_proxy_transport_exception(exc):
+                        proxy_selector.record_outcome(
+                            proxy_selection,
+                            failed=True,
+                        )
                     raise
 
                 status_code = getattr(response, "status_code", None)
@@ -679,11 +765,12 @@ class Booru:
                     await response.content
                     response.__class__ = Response
 
-                response: Response = cast(Response, response)
-
                 # INFO 被关闭时跳过 repr、history、body size 与格式化，避免批量下载在热路径为不可见日志支付额外成本
                 if should_log_response:
                     assert start_time is not None
+                    prepared_request = response.request
+                    response_method = getattr(prepared_request, "method", method)
+                    response_url = getattr(prepared_request, "url", url)
                     content = getattr(response, "_content", None)
                     if content is None:
                         content = getattr(response, "content", None)
@@ -694,7 +781,7 @@ class Booru:
                     logger.info(
                         " ".join(
                             [
-                                f'{response.request.method} {response.request.url} "{repr(response).replace("Response ", "")} {response.reason}"',
+                                f'{response_method} {response_url} "{repr(response).replace("Response ", "")} {response.reason}"',
                                 (
                                     f"via {proxy_selection.log}"
                                     if proxy_selection.log
@@ -1289,23 +1376,10 @@ class Booru:
         """
         temporary_filepath: str | None = None
         try:
-            # DownloadItem 接受 niquests 的完整 HeadersType；按具体容器复制并在副本中追加 Referer，既避免修改调用方对象，也保留 list-of-tuples 与 kiss-headers 的兼容性
-            request_headers: Any = item.headers
-            if request_headers is not None:
-                if isinstance(request_headers, list) and item.referer is not None:
-                    # Booru.request 的 Referer 快捷参数需要可更新映射；仅在使用该快捷参数时把 tuple 列表正规化，普通下载仍保留 niquests 支持的原始列表形式
-                    request_headers = dict(request_headers)
-                elif isinstance(request_headers, list):
-                    request_headers = request_headers.copy()
-                elif hasattr(request_headers, "to_dict"):
-                    request_headers = request_headers.to_dict()
-                else:
-                    request_headers = request_headers.copy()
-
             # 请求成功不代表响应体有效；空响应若直接写入会留下难以察觉且后续被误判为已下载的 0 字节文件
             response = await self.get(
                 item.url,
-                headers=cast(HeadersType | None, request_headers),
+                headers=item.headers,
                 referer=item.referer,
             )
             # 基础 HTTP verb 保留最终错误 response 供调用方检查；下载 helper 必须在消费正文前单独拒绝 4xx/5xx，避免把维护页或限流页保存成图片
@@ -1511,8 +1585,8 @@ class Booru:
         self,
         api: str,
         *,
-        headers: dict | None = None,
-        params: dict | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
         callback: Callable[[Any], Any] | None = None,
         **kwargs,
     ) -> list[dict] | None:
@@ -1521,8 +1595,8 @@ class Booru:
 
         Args:
             api (str): API URL，响应以 json 格式返回
-            headers (dict, optional): 请求头. Defaults to None.
-            params (dict, optional): 请求参数. Defaults to None.
+            headers (HeadersType, optional): 请求头. Defaults to None.
+            params (QueryParameterType, optional): 请求参数. Defaults to None.
             callback (Callable[[Any], Any], optional): 回调函数，用于后处理每个页面帖子的 json 响应内容. Defaults to None.
             **kwargs: 传递给 niquests.AsyncSession.request 的其它关键字参数
 
@@ -1532,33 +1606,28 @@ class Booru:
         Note:
             Empty or malformed HTTP 200 JSON responses are retried with the same bounded attempt setting as the request. A valid JSON empty list is returned immediately and is not retried.
         """
-        fetch_attempts = kwargs.get("max_attempt_number")
-        if fetch_attempts is None:
-            fetch_attempts = self._max_attempt_number
-        if fetch_attempts is None:
-            fetch_attempts = 1
-        fetch_attempts = max(fetch_attempts, 1)
+        fetch_attempts = self._resolve_max_attempt_number(
+            kwargs.get("max_attempt_number")
+        )
 
         try:
             # HTTP 200 的空正文或临时 HTML 拦截页不会触发请求层 status retry；只对 JSON 解码失败额外重取整个页面，合法 JSON 空列表仍会立即返回
-            async for attempt in AsyncRetrying(
+            retrying = AsyncRetrying(
                 sleep=asyncio.sleep,
                 stop=stop_after_attempt(fetch_attempts),
                 wait=wait_exponential_jitter(initial=1, max=10, jitter=3),
                 retry=retry_if_exception_type(JSONDecodeError),
                 before_sleep=before_sleep_log(logger, logging.WARNING),
                 reraise=True,
-            ):
-                with attempt:
-                    response = await self.get(
-                        api,
-                        headers=headers,
-                        params=params,
-                        **kwargs,
-                    )
-                    # 与 download_file 相同，解析 JSON 前拒绝最终错误 response；fetch_page 的返回值只表示有效业务 JSON 或显式失败
-                    response.raise_for_status()
-                    content = response.json()
+            )
+            # 使用 tenacity 的 callable 接口表达“重新执行完整页面请求”，避免在业务 helper 内再维护一套手写 attempt 循环；retry predicate 仍严格限定为 JSONDecodeError
+            content = await retrying(
+                self._fetch_page_json_once,
+                api,
+                headers=headers,
+                params=params,
+                request_kwargs=kwargs,
+            )
 
             # 处理回调
             if callback:
@@ -1576,12 +1645,45 @@ class Booru:
             # None 是显式失败状态，不能与服务器成功返回的空 JSON 列表混为同一个分页终止信号
             return None
 
+    async def _fetch_page_json_once(
+        self,
+        api: str,
+        *,
+        headers: HeadersType | None,
+        params: QueryParameterType | None,
+        request_kwargs: Mapping[str, Any],
+    ) -> Any:
+        """Fetch and decode one page without applying content-level retries.
+
+        Args:
+            api (str): API URL expected to return JSON.
+            headers (HeadersType | None): Optional request headers.
+            params (QueryParameterType | None): Optional query parameters.
+            request_kwargs (Mapping[str, Any]): Additional arguments forwarded to :meth:`get`.
+
+        Returns:
+            Any: Decoded JSON response body.
+
+        Raises:
+            RequestException: If the final HTTP response is unsuccessful.
+            JSONDecodeError: If a successful response does not contain valid JSON.
+        """
+        response = await self.get(
+            api,
+            headers=headers,
+            params=params,
+            **request_kwargs,
+        )
+        # request 会保留最后一次 HTTP error response 供基础 verb 调用方检查；页面 helper 在解析前主动拒绝它，保证返回值只代表有效业务 JSON
+        response.raise_for_status()
+        return response.json()
+
     async def concurrent_fetch_page(
         self,
         api: str,
         *,
-        headers: dict | None = None,
-        params: dict | None = None,
+        headers: HeadersType | None = None,
+        params: QueryParameterType | None = None,
         start_page: int,
         end_page: int,
         page_key: str,
@@ -1593,8 +1695,8 @@ class Booru:
 
         Args:
             api (str): API URL，响应以 json 格式返回
-            headers (dict, optional): 请求头. Defaults to None.
-            params (dict, optional): 请求参数. Defaults to None.
+            headers (HeadersType, optional): 请求头. Defaults to None.
+            params (QueryParameterType, optional): 请求参数. Defaults to None.
             start_page (int): 查询起始页码
             end_page (int): 查询结束页码
             page_key (str): 页码参数的名称，用于在传递的 params 参数中设置页码
@@ -1604,9 +1706,8 @@ class Booru:
         Yields:
             PageResult | None. 请求完成时返回携带页码的结果，其中 content=None 明确表示请求失败；任务在结果构造前抛出其它异常时返回 None
         """
-        if headers is None:
-            headers = {}
-        base_params = {} if params is None else params.copy()
+        # headers 只会向下透传，不需要为 None 创建空 dict；params 会追加页码，因此先建立独立的普通 mapping，避免并发任务修改调用方容器
+        base_params = {} if params is None else dict(params)
 
         async def fetch_page_result(page: int) -> PageResult:
             # 每个并发任务使用独立 params，避免修改调用方传入的字典。

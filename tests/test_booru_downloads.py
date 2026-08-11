@@ -232,7 +232,7 @@ class BooruDownloadTests(unittest.IsolatedAsyncioTestCase):
             result = await booru.download_file(item)
 
         self.assertIsNotNone(result)
-        self.assertEqual(calls[0]["headers"], {"X-Download": "one"})
+        self.assertEqual(calls[0]["headers"], [("X-Download", "one")])
         self.assertEqual(calls[0]["referer"], "https://example.test/posts/1")
         self.assertEqual(headers, [("X-Download", "one")])
 

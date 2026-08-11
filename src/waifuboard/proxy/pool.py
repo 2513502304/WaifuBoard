@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import random
-from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urlparse
@@ -16,6 +15,7 @@ from niquests.utils import (
     select_proxy,
     should_bypass_proxies,
 )
+from pydantic import BaseModel, ConfigDict
 
 from ..observability import format_elapsed, logger
 from .cooldown import DIRECT_PROXY_KEY, ProxyCooldownTracker
@@ -40,8 +40,7 @@ PREPARED_PROXY_CACHE_SIZE = 16
 PROXY_ROUTE_CACHE_SIZE = 32
 
 
-@dataclass(frozen=True)
-class ProxyResolution:
+class ProxyResolution(BaseModel):
     """Resolved proxy identity for both internal cooldown tracking and logs.
 
     Attributes:
@@ -49,12 +48,13 @@ class ProxyResolution:
         log (str | None): Redacted proxy identity safe to include in logs.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     key: str | None
     log: str | None
 
 
-@dataclass(frozen=True)
-class ProxySelection:
+class ProxySelection(ProxyResolution):
     """One normalized proxy selection and its internal and log-safe identities.
 
     Attributes:
@@ -64,18 +64,17 @@ class ProxySelection:
     """
 
     proxies: dict[str, str]
-    key: str | None
-    log: str | None
 
 
-@dataclass(frozen=True)
-class _ProxyCandidate:
+class _ProxyCandidate(BaseModel):
     """One resolved pool candidate with a stable per-request identity.
 
     Attributes:
         index (int): Stable candidate index within the prepared proxy pool.
         selection (ProxySelection): Reusable normalized and resolved proxy metadata.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     index: int
     selection: ProxySelection
@@ -335,6 +334,10 @@ class PreparedProxyPool:
         Returns:
             _EnvironmentProxySnapshots: Current environment mappings suitable for a route-cache key.
         """
+        if self._no_proxy_values == ("*",):
+            # 显式 direct 已通过 no_proxy="*" 压过所有环境代理；跳过 getproxies 可避免每个 request-level proxies=None 请求读取无用的系统配置
+            return (("*", ()),)
+
         # 环境变量可能在长时间运行的进程中变化；把当前快照放进 route-cache key，既复用稳定环境下的解析结果，也不会在变化后继续使用陈旧代理
         # urllib/niquests 的 get_environ_proxies 会先调用 getproxies 再判断 no_proxy；这里先读取一次共享快照，避免候选池包含多种 bypass 规则时重复查询系统代理配置
         environment_proxies = getproxies()
@@ -474,7 +477,8 @@ def resolve_outcome_proxy(
     resolution = _finalize_proxy_resolution(resolution)
 
     return ProxySelection(
-        proxies=effective_proxies.copy(),
+        # Pydantic 会复制 dict 字段；直接传入可避免在 redirect outcome 热路径做两次浅拷贝
+        proxies=effective_proxies,
         key=resolution.key,
         log=resolution.log,
     )
@@ -524,8 +528,8 @@ class ProxySelector:
                 log=DIRECT_PROXY_KEY,
             )
 
-        if not self._tracker.enabled:
-            # cooldown 默认关闭时无需扫描整个代理池；成功请求只做一次 O(1) random.choice，外层 retry 才按已用索引查找下一个候选
+        if not self._tracker.has_active_cooldowns:
+            # 未启用 cooldown 或当前没有活跃窗口时无需扫描整个代理池；成功请求只做一次 O(1) random.choice，外层 retry 才按已用索引查找下一个候选
             return self._select_without_cooldown()
 
         while True:
@@ -721,9 +725,10 @@ class ProxySelector:
         Returns:
             ProxySelection: Request-local selection whose mapping may be safely consumed or mutated downstream.
         """
-        # ProxySelection 是 frozen dataclass，但其中的 dict 仍可变；request-local copy 可防止 hook、niquests 未来版本或外部 helper 调用方污染全局 prepared cache
+        # frozen Pydantic model 只阻止字段重新赋值，dict 内容仍可变；request-local model copy 可防止 hook、niquests 未来版本或外部 helper 调用方污染全局 prepared cache
         return ProxySelection(
-            proxies=selection.proxies.copy(),
+            # Pydantic 会为 dict 字段创建独立容器；无需先手动 copy 再让模型重复复制
+            proxies=selection.proxies,
             key=selection.key,
             log=selection.log,
         )

@@ -4,7 +4,42 @@ import heapq
 import time
 from collections.abc import Callable, Iterable
 
+from niquests.exceptions import (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    MultiplexingError,
+    RequestException,
+    RetryError,
+    Timeout,
+)
+
 DIRECT_PROXY_KEY = "direct"
+
+_PROXY_TRANSPORT_EXCEPTIONS = (
+    ChunkedEncodingError,
+    ConnectionError,
+    ContentDecodingError,
+    MultiplexingError,
+    RetryError,
+    Timeout,
+)
+
+
+def is_proxy_transport_exception(error: BaseException) -> bool:
+    """Return whether an exception is evidence of a failed transport path.
+
+    Args:
+        error (BaseException): Exception raised while niquests sends or gathers a response.
+
+    Returns:
+        bool: True for niquests transport failures that may indicate an unhealthy proxy.
+    """
+    # niquests 有时直接抛基础 RequestException 表示未细分的连接失败，因此保留精确基类；InvalidURL、HTTPError、JSONDecodeError 等业务/输入子类不能污染代理健康
+    return type(error) is RequestException or isinstance(
+        error,
+        _PROXY_TRANSPORT_EXCEPTIONS,
+    )
 
 
 class ProxyCooldownTracker:
@@ -52,6 +87,21 @@ class ProxyCooldownTracker:
             bool: True when a failure threshold is configured, otherwise False.
         """
         return self.threshold is not None
+
+    @property
+    def has_active_cooldowns(self) -> bool:
+        """Return whether at least one proxy still has an active cooldown.
+
+        Returns:
+            bool: True when a non-expired cooldown window exists.
+        """
+        if not self.enabled or not self._cooldown_until:
+            # 健康池是绝大多数请求的常态；空字典判断让已启用 threshold 的大型池也能跳过整池 remaining 扫描和时钟读取
+            return False
+
+        now = self._clock()
+        self._prune_expired(now)
+        return bool(self._cooldown_until)
 
     def remaining(self, proxy: str) -> float:
         """Return remaining cooldown seconds for a proxy, pruning expired entries.
